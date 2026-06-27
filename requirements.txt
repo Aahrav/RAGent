@@ -1,12 +1,18 @@
-﻿# Core framework
+# Core framework
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 
 # LLM orchestration
 langchain>=0.2.0
 langchain-community>=0.2.0
+langchain-openai>=0.1.0
+langchain-ollama>=0.1.0
 langgraph>=0.1.0
 openai>=1.30.0
+
+# Document loading
+pypdf>=4.0.0          # PDF text extraction
+
 
 # Vector DB
 qdrant-client>=1.9.0
