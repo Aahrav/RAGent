@@ -16,6 +16,8 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware
+from src.api.routes import chat, health, ingest
 from src.config import get_settings
 from src.ml import embedding
 from src.utils.logger import get_logger
@@ -79,6 +81,23 @@ app = FastAPI(
 )
 
 
+# ── Part 2: Middleware & Routes ────────────────────────────────────────────────
+
+# Middleware is executed in the REVERSE order of how it is added.
+# We want the RequestContext (ID generator) to run absolutely first, 
+# and Logging to run second, so we add Logging first, then Context.
+
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RequestContextMiddleware)
+
+
+# Mount the API routers
+# Each router handles a specific domain (e.g. all /chat endpoints)
+app.include_router(health.router)
+app.include_router(ingest.router)
+app.include_router(chat.router)
+
+
 @app.get("/", include_in_schema=False)
 def root() -> JSONResponse:
     """Root redirect.
@@ -96,4 +115,5 @@ def root() -> JSONResponse:
             "health": "/health",
         }
     )
+
 
