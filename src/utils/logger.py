@@ -34,6 +34,16 @@ class _JsonFormatter(logging.Formatter):
             "line": record.lineno,
         }
 
+        # Automatically inject the request ID if we are inside a request context
+        try:
+            from src.api.middleware import get_request_id
+            req_id = get_request_id()
+            if req_id:
+                payload["request_id"] = req_id
+        except ImportError:
+            # Middleware module might not be fully initialized yet
+            pass
+
         # Merge any extra fields the caller passed in
         for key, value in record.__dict__.items():
             if key not in {

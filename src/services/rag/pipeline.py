@@ -40,8 +40,9 @@ from pathlib import Path
 
 from src.config import get_settings
 from src.ml.embedding import embed
+from src.services.rag import generator, retriever
 from src.services.rag.document_loader import load_documents
-from src.services.rag.models import Chunk, IngestResult
+from src.services.rag.models import Chunk, Citation, IngestResult, QueryResult
 from src.services.rag.text_splitter import split_documents
 from src.storage import document_store, vector_db
 from src.utils.logger import get_logger
@@ -258,6 +259,70 @@ def _elapsed(start: float) -> float:
     return round(time.perf_counter() - start, 2)
 
 
-# ── Query pipeline placeholder ─────────────────────────────────────────────────
-# The query() function will be added here in Step 1.4.
-# It will call: retriever.retrieve() → generator.generate() → evaluator.evaluate()
+# ── Query pipeline ───────────────────────────────────────────────────────────────
+
+def query(user_input: str) -> QueryResult:
+    """Execute the full RAG query pipeline.
+
+    Steps:
+      1. Retrieve relevant chunks from the vector store.
+      2. Generate an answer using the LLM.
+      3. Map the retrieved chunks into Citation objects.
+      4. (Phase 2) Evaluate hallucination / safety.
+
+    Args:
+        user_input: The question asked by the user.
+
+    Returns:
+        :class:`QueryResult` containing the answer, citations, and metadata.
+    """
+    start_time = time.perf_counter()
+    logger.info("Query started", extra={"query": user_input})
+
+    # 1. Retrieve
+    chunks = retriever.retrieve(query=user_input)
+
+    if not chunks:
+        # Fallback if the database is empty or nothing matches
+        return QueryResult(
+            answer="I don't have any ingested documents to answer that question.",
+            citations=[],
+            latency_ms=_elapsed(start_time) * 1000,
+        )
+
+    # 2. Generate
+    answer = generator.generate_answer(
+        query=user_input,
+        context_chunks=chunks,
+    )
+
+    # 3. Build citations (simple mapping for Phase 1)
+    # In Phase 2, this will be replaced by the hallucination evaluator
+    # which will only cite the specific chunks actually used in the answer.
+    citations: list[Citation] = []
+    for chunk in chunks:
+        citations.append(
+            Citation(
+                document=chunk.metadata.get("filename", Path(chunk.source).name),
+                source=chunk.source,
+                page=chunk.page,
+                text=chunk.text,
+                score=chunk.score,
+            )
+        )
+
+    latency_ms = _elapsed(start_time) * 1000
+
+    logger.info(
+        "Query complete",
+        extra={
+            "latency_ms": round(latency_ms, 2),
+            "citations_returned": len(citations),
+        },
+    )
+
+    return QueryResult(
+        answer=answer,
+        citations=citations,
+        latency_ms=latency_ms,
+    )

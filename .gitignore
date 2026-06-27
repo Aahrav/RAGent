@@ -118,3 +118,4 @@ embeddings_cache/
 tmp/
 temp/
 scratch/
+local_scripts/
