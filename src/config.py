@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     )
 
     # ── App ───────────────────────────────────────────────────────────────────
+    environment: str = Field(
+        default="development",
+        description="Deployment environment (development, staging, production).",
+    )
     app_secret_key: str = Field(
         default="changeme-replace-in-production",
         description="Secret key for signing tokens.",

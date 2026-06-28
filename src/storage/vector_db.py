@@ -164,14 +164,14 @@ def search(
         ]
         qdrant_filter = qmodels.Filter(must=conditions)
 
-    results = client.search(
+    results = client.query_points(
         collection_name=collection,
-        query_vector=query_vector,
+        query=query_vector,
         limit=top_k,
         score_threshold=score_threshold if score_threshold > 0 else None,
         query_filter=qdrant_filter,
         with_payload=True,
-    )
+    ).points
 
     hits = []
     for r in results:

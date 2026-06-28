@@ -171,7 +171,7 @@ def save_doc_meta(
         "Document metadata saved",
         extra={
             "doc_id": meta["doc_id"],
-            "filename": meta["filename"],
+            "file_name": meta["filename"],
             "chunk_count": chunk_count,
         },
     )
