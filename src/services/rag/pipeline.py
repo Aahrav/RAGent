@@ -262,13 +262,14 @@ def _elapsed(start: float) -> float:
 # ── Query pipeline ───────────────────────────────────────────────────────────────
 
 def query(user_input: str) -> QueryResult:
-    """Execute the full RAG query pipeline.
+    """Execute the full RAG query pipeline with Guardrails.
 
     Steps:
+      0. (Phase 2) Pre-flight content safety check.
       1. Retrieve relevant chunks from the vector store.
       2. Generate an answer using the LLM.
-      3. Map the retrieved chunks into Citation objects.
-      4. (Phase 2) Evaluate hallucination / safety.
+      3. (Phase 2) Evaluate groundedness (hallucination detection).
+      4. (Phase 2) Extract strict citations based on confidence threshold.
 
     Args:
         user_input: The question asked by the user.
@@ -278,6 +279,20 @@ def query(user_input: str) -> QueryResult:
     """
     start_time = time.perf_counter()
     logger.info("Query started", extra={"query": user_input})
+
+    # 0. Safety Check
+    from src.services.guardrails.safety import check_safety
+    try:
+        check_safety(user_input)
+    except ValueError as e:
+        logger.warning("Safety check failed", extra={"error": str(e)})
+        return QueryResult(
+            answer="I'm sorry, I cannot fulfill this request because it violates safety policies.",
+            citations=[],
+            latency_ms=_elapsed(start_time) * 1000,
+            confidence=0.0,
+            fallback_triggered=True
+        )
 
     # 1. Retrieve
     chunks = retriever.retrieve(query=user_input)
@@ -296,20 +311,25 @@ def query(user_input: str) -> QueryResult:
         context_chunks=chunks,
     )
 
-    # 3. Build citations (simple mapping for Phase 1)
-    # In Phase 2, this will be replaced by the hallucination evaluator
-    # which will only cite the specific chunks actually used in the answer.
-    citations: list[Citation] = []
-    for chunk in chunks:
-        citations.append(
-            Citation(
-                document=chunk.metadata.get("filename", Path(chunk.source).name),
-                source=chunk.source,
-                page=chunk.page,
-                text=chunk.text,
-                score=chunk.score,
-            )
+    # 3 & 4. Guardrails (Groundedness and Citations)
+    from src.services.guardrails.scorer import calculate_groundedness
+    from src.services.guardrails.citations import extract_citations
+    from src.config import get_settings
+    
+    settings = get_settings()
+    
+    overall_confidence, chunk_scores = calculate_groundedness(answer, chunks)
+    citations = extract_citations(chunks, chunk_scores, settings.confidence_threshold)
+    
+    fallback_triggered = False
+    if overall_confidence < settings.confidence_threshold:
+        logger.warning(
+            "Hallucination detected (low confidence)",
+            extra={"confidence": overall_confidence, "threshold": settings.confidence_threshold}
         )
+        answer = "I'm sorry, I couldn't find a reliable answer in the provided documents."
+        citations = []
+        fallback_triggered = True
 
     latency_ms = _elapsed(start_time) * 1000
 
@@ -318,6 +338,8 @@ def query(user_input: str) -> QueryResult:
         extra={
             "latency_ms": round(latency_ms, 2),
             "citations_returned": len(citations),
+            "confidence": round(overall_confidence, 4),
+            "fallback_triggered": fallback_triggered
         },
     )
 
@@ -325,4 +347,6 @@ def query(user_input: str) -> QueryResult:
         answer=answer,
         citations=citations,
         latency_ms=latency_ms,
+        confidence=overall_confidence,
+        fallback_triggered=fallback_triggered
     )
