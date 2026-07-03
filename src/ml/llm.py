@@ -8,6 +8,8 @@ Supported providers:
   - ollama    (Local, free, private)
   - openai    (Cloud, state-of-the-art)
   - anthropic (Cloud, excellent context handling)
+  - openrouter (Cloud aggregator, any model)
+  - huggingface (Cloud inference endpoints)
 """
 
 from __future__ import annotations
@@ -98,10 +100,42 @@ def get_llm() -> "BaseChatModel":
                 temperature=0,
             )
 
+        elif provider == "openrouter":
+            from langchain_openai import ChatOpenAI
+            
+            if not settings.openrouter_api_key:
+                logger.warning("OpenRouter API key is missing from config")
+
+            _llm = ChatOpenAI(
+                model=model_name,
+                api_key=settings.openrouter_api_key,
+                base_url="https://openrouter.ai/api/v1",
+                temperature=0,
+            )
+
+        elif provider == "huggingface":
+            try:
+                from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+            except ImportError as exc:
+                raise ImportError(
+                    "langchain-huggingface is required for the huggingface provider. "
+                    "Run: pip install langchain-huggingface"
+                ) from exc
+                
+            if not settings.huggingface_api_key:
+                logger.warning("HuggingFace API key is missing from config")
+                
+            llm_endpoint = HuggingFaceEndpoint(
+                repo_id=model_name,
+                huggingfacehub_api_token=settings.huggingface_api_key,
+                temperature=0.1,  # HF endpoints often fail with exactly 0.0
+            )
+            _llm = ChatHuggingFace(llm=llm_endpoint)
+
         else:
             raise ValueError(
                 f"Unsupported LLM provider '{provider}'. "
-                f"Supported: openai, ollama, anthropic"
+                f"Supported: openai, ollama, anthropic, openrouter, huggingface"
             )
 
         logger.info("LLM initialized successfully")

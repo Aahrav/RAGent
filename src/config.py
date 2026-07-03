@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     # ── LLM provider ──────────────────────────────────────────────────────────
-    llm_provider: Literal["openai", "ollama", "anthropic"] = Field(
+    llm_provider: Literal["openai", "ollama", "anthropic", "openrouter", "huggingface"] = Field(
         default="ollama",
         description="Which LLM backend to use.",
     )
@@ -45,6 +45,12 @@ class Settings(BaseSettings):
 
     # ── Anthropic ─────────────────────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", description="Anthropic API key.")
+
+    # ── OpenRouter ────────────────────────────────────────────────────────────
+    openrouter_api_key: str = Field(default="", description="OpenRouter API key.")
+
+    # ── HuggingFace ───────────────────────────────────────────────────────────
+    huggingface_api_key: str = Field(default="", description="HuggingFace API key.")
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     qdrant_url: str = Field(
