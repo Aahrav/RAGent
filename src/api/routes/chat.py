@@ -30,11 +30,15 @@ class ChatRequest(BaseModel):
 
     Attributes:
         query: The user's question.
+        use_agent: Optional flag to force the query to use the Agent pipeline 
+            (True) or the standard RAG pipeline (False). If None, the system's 
+            semantic router will decide automatically.
 
     Example::
 
         {
-          "query": "What were the key takeaways from the Q3 report?"
+          "query": "What were the key takeaways from the Q3 report?",
+          "use_agent": false
         }
     """
 
@@ -43,6 +47,10 @@ class ChatRequest(BaseModel):
         min_length=1,
         description="The question to ask the RAG system.",
         examples=["What were the key takeaways from the Q3 report?"],
+    )
+    use_agent: bool | None = Field(
+        default=None,
+        description="Override the automatic router. True forces the Agent, False forces standard RAG.",
     )
 
 
@@ -62,6 +70,9 @@ class ChatResponse(BaseModel):
         answer:     The generated text response.
         citations:  List of source chunks used to generate the answer.
         latency_ms: Time taken to process the query.
+        tools_used: List of tools the Agent executed (if any).
+        confidence: Groundedness score (0.0 to 1.0) indicating hallucination risk.
+        fallback_triggered: True if the primary answer was blocked by a guardrail.
 
     Example::
 
@@ -76,12 +87,18 @@ class ChatResponse(BaseModel):
               "score": 0.892
             }
           ],
-          "latency_ms": 1450.2
+          "latency_ms": 1450.2,
+          "tools_used": ["rag_search"],
+          "confidence": 0.94,
+          "fallback_triggered": false
         }
     """
     answer: str
     citations: list[CitationResponse]
     latency_ms: float
+    tools_used: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    fallback_triggered: bool = False
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -114,7 +131,10 @@ def chat(request: ChatRequest) -> ChatResponse:
     logger.info("Chat request received", extra={"query": request.query})
 
     try:
-        result = pipeline.query(user_input=request.query)
+        result = pipeline.query(
+            user_input=request.query,
+            use_agent=request.use_agent
+        )
     except Exception as exc:
         logger.error(
             "Chat pipeline failed",
@@ -142,4 +162,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         answer=result.answer,
         citations=citations,
         latency_ms=result.latency_ms,
+        tools_used=result.tools_used,
+        confidence=result.confidence,
+        fallback_triggered=result.fallback_triggered,
     )

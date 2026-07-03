@@ -261,11 +261,12 @@ def _elapsed(start: float) -> float:
 
 # ── Query pipeline ───────────────────────────────────────────────────────────────
 
-def query(user_input: str) -> QueryResult:
-    """Execute the full RAG query pipeline with Guardrails.
+def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
+    """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
       0. (Phase 2) Pre-flight content safety check.
+      0.5. (Phase 3) Semantic router decides between Fast RAG and LangGraph Agent.
       1. Retrieve relevant chunks from the vector store.
       2. Generate an answer using the LLM.
       3. (Phase 2) Evaluate groundedness (hallucination detection).
@@ -273,12 +274,13 @@ def query(user_input: str) -> QueryResult:
 
     Args:
         user_input: The question asked by the user.
+        use_agent: Optional override for the semantic router.
 
     Returns:
         :class:`QueryResult` containing the answer, citations, and metadata.
     """
     start_time = time.perf_counter()
-    logger.info("Query started", extra={"query": user_input})
+    logger.info("Query started", extra={"query": user_input, "use_agent_override": use_agent})
 
     # 0. Safety Check
     from src.services.guardrails.safety import check_safety
@@ -294,6 +296,46 @@ def query(user_input: str) -> QueryResult:
             fallback_triggered=True
         )
 
+    # =========================================================================
+    # ROUTER (Phase 3)
+    # =========================================================================
+    from src.services.agent.router import route_query
+    
+    # If the user didn't explicitly override it, use the semantic router
+    should_use_agent = use_agent if use_agent is not None else route_query(user_input)
+    
+    if should_use_agent:
+        logger.info("Executing LangGraph Agent Pipeline")
+        from langchain_core.messages import HumanMessage
+        from src.services.agent.graph import agent_app
+        
+        # Invoke the LangGraph agent
+        final_state = agent_app.invoke({"messages": [HumanMessage(content=user_input)]})
+        
+        # The final message is the last AI message in the state
+        final_message = final_state["messages"][-1].content
+        
+        # Extract tools used from the state history
+        tools_used = []
+        for msg in final_state["messages"]:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for call in msg.tool_calls:
+                    tools_used.append(call["name"])
+        
+        latency_ms = _elapsed(start_time) * 1000
+        return QueryResult(
+            answer=final_message,
+            citations=[],  # Agent handles its own citing directly in text for now
+            latency_ms=latency_ms,
+            confidence=1.0,
+            fallback_triggered=False,
+            tools_used=tools_used
+        )
+
+    # =========================================================================
+    # FAST RAG PIPELINE (Phase 1 & 2)
+    # =========================================================================
+    logger.info("Executing Fast RAG Pipeline")
     # 1. Retrieve
     chunks = retriever.retrieve(query=user_input)
 
