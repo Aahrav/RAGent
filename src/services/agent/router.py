@@ -10,15 +10,24 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# We define "anchors". An anchor is a prototypical query or description 
-# representing a specific route.
-AGENT_ANCHOR = "math calculation addition multiply current events live news live weather stock price search the internet compare difference between complex reasoning"
-RAG_ANCHOR = "internal company documents policies project apollo database architectural overview employee handbook private records"
+# We define multiple specific anchors for better semantic clustering.
+# If the query is close to ANY agent anchor, we route to the agent.
+AGENT_ANCHORS = [
+    "math calculation arithmetic numbers addition multiplication",
+    "live news current events stock prices real-time information",
+    "what is the live weather forecast temperature right now",
+    "who is the ceo of meta public figures tech companies general knowledge internet search",
+    "compare and contrast difference between complex multi-step reasoning"
+]
 
-# Pre-compute the embeddings for our anchors so we don't recalculate them on every request
-# (When the app starts, this module is imported once, caching these vectors in memory)
-_agent_vector = embed([AGENT_ANCHOR])[0]
-_rag_vector = embed([RAG_ANCHOR])[0]
+RAG_ANCHORS = [
+    "internal company documents policies procedures employee handbook",
+    "project apollo database architecture engineering specs internal records"
+]
+
+# Pre-compute embeddings for all anchors
+_agent_vectors = embed(AGENT_ANCHORS)
+_rag_vectors = embed(RAG_ANCHORS)
 
 
 def route_query(query: str) -> bool:
@@ -33,11 +42,12 @@ def route_query(query: str) -> bool:
     # Embed the incoming user query
     query_vector = embed([query])[0]
     
-    # Calculate how semantically similar the query is to both anchors
-    agent_score = cosine_similarity(query_vector, _agent_vector)
-    rag_score = cosine_similarity(query_vector, _rag_vector)
+    # Calculate how semantically similar the query is to all anchors
+    # We take the MAXIMUM score for both categories
+    agent_score = max(cosine_similarity(query_vector, vec) for vec in _agent_vectors)
+    rag_score = max(cosine_similarity(query_vector, vec) for vec in _rag_vectors)
     
-    # Route based on which anchor is closer in the vector space
+    # Route based on which cluster is closer in the vector space
     if agent_score > rag_score:
         logger.info(
             "Query semantically routed to Agent",

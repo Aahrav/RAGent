@@ -1,5 +1,9 @@
 """LangGraph agent nodes and definitions."""
 
+import json
+import uuid
+
+from langchain_core.messages import AIMessage
 from langgraph.prebuilt import ToolNode
 
 from src.ml.llm import get_llm
@@ -30,6 +34,32 @@ def call_model(state: AgentState) -> dict:
     
     # We pass the full conversation history to the model
     response = model_with_tools.invoke(state["messages"])
+    
+    # --- HOTFIX FOR LOCAL OLLAMA JSON TOOL CALLING ---
+    # Llama3 often returns the tool call as raw JSON in the content string
+    # instead of populating the native LangChain `tool_calls` attribute.
+    if isinstance(response, AIMessage) and not getattr(response, "tool_calls", None) and response.content:
+        content_str = str(response.content).strip()
+        # Sometimes the LLM wraps it in a markdown block
+        if content_str.startswith("```json"):
+            content_str = content_str[7:].strip()
+        if content_str.endswith("```"):
+            content_str = content_str[:-3].strip()
+            
+        if content_str.startswith("{") and content_str.endswith("}"):
+            try:
+                parsed = json.loads(content_str)
+                if "name" in parsed and "arguments" in parsed:
+                    logger.info("Intercepted raw JSON tool call from Ollama", extra={"tool": parsed["name"]})
+                    response.tool_calls = [{
+                        "name": parsed["name"],
+                        "args": parsed["arguments"],
+                        "id": f"call_{uuid.uuid4().hex[:8]}"
+                    }]
+                    response.content = ""
+            except json.JSONDecodeError:
+                pass
+    # -------------------------------------------------
     
     # Return the response as a dictionary matching the AgentState schema.
     # The `add_messages` reducer will automatically append it to the list.

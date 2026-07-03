@@ -306,11 +306,22 @@ def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
     
     if should_use_agent:
         logger.info("Executing LangGraph Agent Pipeline")
-        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import HumanMessage, SystemMessage
         from src.services.agent.graph import agent_app
         
-        # Invoke the LangGraph agent
-        final_state = agent_app.invoke({"messages": [HumanMessage(content=user_input)]})
+        system_prompt = """You are an intelligent autonomous agent.
+When asked complex questions involving both internal company knowledge (e.g. "Project Apollo") and real-time public information (e.g. weather, news), you MUST break the task down into steps:
+1. First, use `rag_search` to find the internal company facts (like where a project is located).
+2. Second, use `web_search` to find the live public information using the facts you just learned.
+Do not guess or assume internal facts. Always search for them first."""
+
+        # Invoke the LangGraph agent with the system prompt and the user's query
+        final_state = agent_app.invoke({
+            "messages": [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_input)
+            ]
+        })
         
         # The final message is the last AI message in the state
         final_message = final_state["messages"][-1].content
