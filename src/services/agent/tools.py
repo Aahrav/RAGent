@@ -5,6 +5,8 @@ Every tool must have a clear docstring, as the LLM reads the docstring to unders
 when and how to use the tool.
 """
 
+from datetime import datetime
+
 from duckduckgo_search import DDGS
 from langchain_core.tools import tool
 
@@ -82,4 +84,42 @@ def rag_search(query: str) -> str:
     except Exception as e:
         logger.error("RAG search tool failed", extra={"error": str(e), "query": query})
         return f"Error performing internal search: {str(e)}"
+
+
+@tool
+def get_current_datetime() -> str:
+    """Get the current date and time.
+    
+    Use this tool when you need to know today's date or the current time
+    to answer questions about "today", "yesterday", or time-sensitive events.
+    """
+    now = datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@tool
+def calculator(expression: str) -> str:
+    """Evaluate a mathematical expression.
+    
+    Use this tool to perform math calculations safely. 
+    Supported operators: +, -, *, /, **, (, )
+    
+    Args:
+        expression: A mathematical string, e.g. "(124 * 3) + 42"
+    """
+    logger.info("Agent invoked tool: calculator", extra={"expression": expression})
+    
+    # Restrict characters to prevent arbitrary code execution via eval()
+    allowed_chars = set("0123456789+-*/(). ")
+    if not all(c in allowed_chars for c in expression):
+        return "Error: Invalid characters in mathematical expression. Only numbers and basic operators are allowed."
+        
+    try:
+        # pylint: disable=eval-used
+        result = eval(expression, {"__builtins__": {}}, {})
+        return str(result)
+    except Exception as e:
+        logger.error("Calculator tool failed", extra={"error": str(e), "expression": expression})
+        return f"Error evaluating expression: {str(e)}"
+
 
