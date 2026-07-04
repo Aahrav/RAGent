@@ -13,6 +13,7 @@ Flow:
 
 from __future__ import annotations
 
+import concurrent.futures
 from typing import Any
 
 from src.config import get_settings
@@ -104,3 +105,97 @@ def retrieve(
     )
 
     return chunks
+
+
+def reciprocal_rank_fusion(results_list: list[list[Chunk]], k: int = 60) -> list[Chunk]:
+    """Fuse multiple retrieval results using Reciprocal Rank Fusion (RRF).
+    
+    Args:
+        results_list: A list containing lists of retrieved chunks for each query.
+        k: Smoothing constant for RRF.
+        
+    Returns:
+        A list of deduplicated chunks, ranked by their fused score.
+    """
+    fused_scores: dict[str, float] = {}
+    chunk_map: dict[str, Chunk] = {}
+
+    for results in results_list:
+        for rank, chunk in enumerate(results):
+            # Create a unique ID for the chunk since it doesn't have an explicit one
+            chunk_id = f"{chunk.doc_id}_{chunk.chunk_index}"
+            if chunk_id not in fused_scores:
+                fused_scores[chunk_id] = 0.0
+                chunk_map[chunk_id] = chunk
+            # Rank is 0-indexed, so we add 1
+            fused_scores[chunk_id] += 1.0 / (rank + 1 + k)
+
+    # Sort chunks by their fused score in descending order
+    sorted_items = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    fused_results = []
+    for chunk_id, score in sorted_items:
+        chunk = chunk_map[chunk_id]
+        chunk.score = score
+        fused_results.append(chunk)
+
+    return fused_results
+
+
+@traceable(name="multi_query_retriever")
+def multi_retrieve(
+    queries: list[str],
+    top_k: int | None = None,
+    score_threshold: float = 0.0,
+    filters: dict[str, Any] | None = None,
+) -> list[Chunk]:
+    """Retrieve chunks for multiple queries in parallel and fuse them with RRF.
+    
+    Args:
+        queries: A list of search query variations.
+        top_k: Max chunks to return.
+        
+    Returns:
+        A deduplicated list of top_k Chunk objects.
+    """
+    if not queries:
+        return []
+
+    settings = get_settings()
+    final_top_k = top_k or settings.retrieval_top_k
+
+    results_list = []
+    
+    # Run Qdrant retrieval for all queries in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(queries)) as executor:
+        futures = [
+            executor.submit(
+                retrieve, 
+                query=q, 
+                top_k=final_top_k, 
+                score_threshold=score_threshold, 
+                filters=filters
+            )
+            for q in queries
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results = future.result()
+                if results:
+                    results_list.append(results)
+            except Exception as e:
+                logger.error("Parallel retrieval failed", extra={"error": str(e)}, exc_info=True)
+                
+    # Deduplicate and re-rank the results
+    fused_results = reciprocal_rank_fusion(results_list)
+    
+    logger.info(
+        "Multi-query retrieval complete",
+        extra={
+            "queries_run": len(queries),
+            "total_fused_chunks": len(fused_results),
+            "returning_top_k": final_top_k
+        }
+    )
+    
+    return fused_results[:final_top_k]
