@@ -1,37 +1,30 @@
-"""Semantic Query Router.
+"""LLM-based Query Router.
 
-Uses embedding distances to decide if a user query should be handled by the 
+Uses a lightweight LLM call to decide if a user query should be handled by the 
 standard (fast) RAG pipeline or the complex LangGraph Agent.
 """
 
-from src.ml.embedding import embed
-from src.services.guardrails.scorer import cosine_similarity
+from typing import Literal
+from pydantic import BaseModel, Field
+
+from src.ml.llm import get_llm
 from src.utils.logger import get_logger
+from langsmith import traceable
 
 logger = get_logger(__name__)
 
-# We define multiple specific anchors for better semantic clustering.
-# If the query is close to ANY agent anchor, we route to the agent.
-AGENT_ANCHORS = [
-    "math calculation arithmetic numbers addition multiplication",
-    "live news current events stock prices real-time information",
-    "what is the live weather forecast temperature right now",
-    "who is the ceo of meta public figures tech companies general knowledge internet search",
-    "compare and contrast difference between complex multi-step reasoning"
-]
 
-RAG_ANCHORS = [
-    "internal company documents policies procedures employee handbook",
-    "project apollo database architecture engineering specs internal records"
-]
-
-# Pre-compute embeddings for all anchors
-_agent_vectors = embed(AGENT_ANCHORS)
-_rag_vectors = embed(RAG_ANCHORS)
+class RouteDecision(BaseModel):
+    """The structured output for the router."""
+    route: Literal["RAG", "AGENT"] = Field(
+        ...,
+        description="Choose 'RAG' for internal company knowledge. Choose 'AGENT' for math, live internet searches, consumer products, weather, or complex reasoning."
+    )
 
 
+@traceable(name="llm_router")
 def route_query(query: str) -> bool:
-    """Determine if a query requires the Agent using semantic routing.
+    """Determine if a query requires the Agent using LLM classification.
     
     Args:
         query: The user's input string.
@@ -39,25 +32,40 @@ def route_query(query: str) -> bool:
     Returns:
         True if the Agent should be used, False to use standard RAG.
     """
-    # Embed the incoming user query
-    query_vector = embed([query])[0]
+    logger.debug("Routing query via LLM", extra={"query": query})
     
-    # Calculate how semantically similar the query is to all anchors
-    # We take the MAXIMUM score for both categories
-    agent_score = max(cosine_similarity(query_vector, vec) for vec in _agent_vectors)
-    rag_score = max(cosine_similarity(query_vector, vec) for vec in _rag_vectors)
+    llm = get_llm()
     
-    # Route based on which cluster is closer in the vector space
-    if agent_score > rag_score:
-        logger.info(
-            "Query semantically routed to Agent",
-            extra={"query": query, "agent_score": round(agent_score, 3), "rag_score": round(rag_score, 3)}
-        )
-        return True
+    try:
+        # We use structured output to guarantee we get exactly "RAG" or "AGENT"
+        router = llm.with_structured_output(RouteDecision)
         
-    # Default to the much faster standard RAG pipeline
-    logger.info(
-        "Query semantically routed to RAG",
-        extra={"query": query, "agent_score": round(agent_score, 3), "rag_score": round(rag_score, 3)}
-    )
-    return False
+        system_prompt = (
+            "You are a routing expert. Your job is to classify user queries into one of two buckets:\n"
+            "1. 'RAG' - The query asks about internal company policies, Project Apollo, or proprietary data.\n"
+            "2. 'AGENT' - The query asks about general knowledge, public figures, consumer products, live weather, stock prices, or math calculations.\n"
+            "If in doubt or the query is very vague (like 'loq laptop' or 'meta ceo'), route to 'AGENT'."
+        )
+        
+        messages = [
+            ("system", system_prompt),
+            ("human", query)
+        ]
+        
+        result: RouteDecision = router.invoke(messages)
+        
+        if result.route == "AGENT":
+            logger.info("Query LLM-routed to Agent", extra={"query": query})
+            return True
+        else:
+            logger.info("Query LLM-routed to RAG", extra={"query": query})
+            return False
+            
+    except Exception as e:
+        logger.warning(
+            "LLM router failed, falling back to Agent", 
+            extra={"error": str(e), "query": query}
+        )
+        # Safest fallback is the Agent since it can handle both internal and external queries
+        return True
+

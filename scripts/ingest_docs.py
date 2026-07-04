@@ -9,6 +9,11 @@ import argparse
 import sys
 from pathlib import Path
 
+# Add the project root (one directory up) to sys.path so we can import 'src'
+project_root = str(Path(__file__).resolve().parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from src.config import get_settings
 from src.ml.embedding import embed
 from src.services.rag.document_loader import load_documents
@@ -23,6 +28,7 @@ def main() -> None:
     """Ingest documents from a file or directory into Qdrant."""
     parser = argparse.ArgumentParser(description="Ingest documents into Qdrant.")
     parser.add_argument("--source", type=str, required=True, help="Path to file or directory")
+    parser.add_argument("--clear", action="store_true", help="Clear the existing collection before ingesting")
     args = parser.parse_args()
 
     source = args.source
@@ -53,6 +59,12 @@ def main() -> None:
 
     # 4. Store in Qdrant
     logger.info("Upserting into Qdrant...", extra={"collection": collection})
+    
+    if args.clear:
+        logger.warning("Clearing existing collection...", extra={"collection": collection})
+        client = vector_db.get_client()
+        client.delete_collection(collection_name=collection)
+        
     vector_db.ensure_collection(collection, vector_size=settings.embedding_dim)
     
     payloads = []

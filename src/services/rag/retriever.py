@@ -24,6 +24,9 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+from langsmith import traceable
+
+@traceable(name="qdrant_retriever")
 def retrieve(
     query: str,
     top_k: int | None = None,

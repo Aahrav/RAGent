@@ -6,9 +6,16 @@ Use get_settings() everywhere — it is cached so the file is parsed once.
 
 from functools import lru_cache
 from typing import Literal
+import os
 
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Ensure that .env variables are actually pushed into os.environ.
+# LangSmith and LangChain require this, as they bypass our Settings object
+# and read directly from the OS environment.
+load_dotenv()
 
 
 class Settings(BaseSettings):

@@ -11,51 +11,36 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def extract_citations(
-    chunks: list[Chunk], chunk_scores: list[float], threshold: float
-) -> list[Citation]:
-    """Map the LLM's answer back to specific chunks and return formal citations.
+def extract_citations(chunks: list[Chunk]) -> list[Citation]:
+    """Map the retrieved chunks to formatted Citation objects.
     
-    Only chunks with a semantic similarity score above the threshold
-    are considered to have been used in the answer.
+    Since the LLM-as-a-Judge verifies the answer against the entire context,
+    we consider all retrieved chunks as the cited source material.
     
     Args:
         chunks: The original list of chunks retrieved from the DB.
-        chunk_scores: The cosine similarity scores from the groundedness scorer.
-        threshold: Minimum score required to be cited.
         
     Returns:
         List of formatted Citation objects.
     """
-    if len(chunks) != len(chunk_scores):
-        logger.error(
-            "Mismatch between chunks and scores length",
-            extra={"chunks_len": len(chunks), "scores_len": len(chunk_scores)}
-        )
-        # Fallback: return everything if there is a mismatch
-        threshold = -1.0
-        
     citations: list[Citation] = []
     
-    for chunk, score in zip(chunks, chunk_scores):
-        # We only cite chunks that meet the semantic threshold
-        if score >= threshold:
-            citations.append(
-                Citation(
-                    document=chunk.metadata.get("filename", Path(chunk.source).name),
-                    source=chunk.source,
-                    page=chunk.page,
-                    text=chunk.text,
-                    score=score,
-                )
+    for chunk in chunks:
+        citations.append(
+            Citation(
+                document=chunk.metadata.get("filename", Path(chunk.source).name),
+                source=chunk.source,
+                page=chunk.page,
+                text=chunk.text,
+                score=1.0,  # Score is obsolete since we use an LLM judge
             )
+        )
             
     logger.debug(
         "Citations extracted",
         extra={
             "retrieved_chunks": len(chunks),
-            "valid_citations": len(citations),
-            "threshold": threshold
+            "valid_citations": len(citations)
         }
     )
             

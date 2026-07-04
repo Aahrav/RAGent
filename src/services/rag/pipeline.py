@@ -261,6 +261,9 @@ def _elapsed(start: float) -> float:
 
 # ── Query pipeline ───────────────────────────────────────────────────────────────
 
+from langsmith import traceable
+
+@traceable(name="ragent_pipeline")
 def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
@@ -371,8 +374,8 @@ Do not guess or assume internal facts. Always search for them first."""
     
     settings = get_settings()
     
-    overall_confidence, chunk_scores = calculate_groundedness(answer, chunks)
-    citations = extract_citations(chunks, chunk_scores, settings.confidence_threshold)
+    overall_confidence = calculate_groundedness(answer, chunks)
+    citations = extract_citations(chunks)
     
     fallback_triggered = False
     if overall_confidence < settings.confidence_threshold:
