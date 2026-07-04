@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+from prometheus_client import Counter, Histogram
 
 from src.utils.logger import get_logger
 
@@ -132,4 +133,59 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             raise  # Re-raise so FastAPI can handle returning the 500 to the client
 
+# ── Part 3: Prometheus Metrics Middleware ──────────────────────────────────────
 
+# Define our Prometheus metrics at the module level so they are only registered once
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "http_status"]
+)
+
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "endpoint"]
+)
+
+ACTIVE_REQUESTS = Gauge(
+    "http_requests_active",
+    "Number of active HTTP requests",
+    ["method", "endpoint"]
+)
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    """Middleware that tracks HTTP request metrics for Prometheus."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        
+        # Don't track metrics for the metrics endpoint itself
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        method = request.method
+        # We group endpoints by their path. In a REST API, you'd want to normalize paths (e.g. /users/{id}) 
+        # but for this simple agent, request.url.path is fine.
+        endpoint = request.url.path
+
+        ACTIVE_REQUESTS.labels(method=method, endpoint=endpoint).inc()
+        start_time = time.perf_counter()
+        
+        try:
+            response = await call_next(request)
+            status_code = str(response.status_code)
+        except Exception:
+            # If there's an unhandled exception, it's a 500 Internal Server Error
+            status_code = "500"
+            raise
+        finally:
+            duration = time.perf_counter() - start_time
+            
+            # Record metrics
+            ACTIVE_REQUESTS.labels(method=method, endpoint=endpoint).dec()
+            REQUEST_COUNT.labels(method=method, endpoint=endpoint, http_status=status_code).inc()
+            REQUEST_LATENCY.labels(method=method, endpoint=endpoint).observe(duration)
+            
+        return response
