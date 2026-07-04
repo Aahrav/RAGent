@@ -119,7 +119,12 @@ def upsert_points(
     ]
 
     client = get_client()
-    client.upsert(collection_name=collection, points=points, wait=True)
+    
+    # Qdrant has a ~32MB payload limit per request. We must batch the upsert.
+    batch_size = 500
+    for i in range(0, len(points), batch_size):
+        batch = points[i : i + batch_size]
+        client.upsert(collection_name=collection, points=batch, wait=True)
 
     logger.debug(
         "Upserted points to Qdrant",

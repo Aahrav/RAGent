@@ -132,10 +132,28 @@ def get_llm() -> "BaseChatModel":
             )
             _llm = ChatHuggingFace(llm=llm_endpoint)
 
+        elif provider == "gemini":
+            try:
+                from langchain_google_genai import ChatGoogleGenerativeAI
+            except ImportError as exc:
+                raise ImportError(
+                    "langchain-google-genai is required for the gemini provider. "
+                    "Run: pip install langchain-google-genai"
+                ) from exc
+
+            if not settings.gemini_api_key:
+                logger.warning("Gemini API key is missing from config")
+
+            _llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                google_api_key=settings.gemini_api_key,
+                temperature=0,
+            )
+
         else:
             raise ValueError(
                 f"Unsupported LLM provider '{provider}'. "
-                f"Supported: openai, ollama, anthropic, openrouter, huggingface"
+                f"Supported: openai, ollama, anthropic, openrouter, huggingface, gemini"
             )
 
         logger.info("LLM initialized successfully")

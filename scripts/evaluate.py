@@ -9,6 +9,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from datasets import Dataset
+
+# Workaround for Ragas importing a deprecated Langchain module
+import sys
+import unittest.mock
+sys.modules['langchain_community.chat_models.vertexai'] = unittest.mock.MagicMock()
+
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy, context_precision
 
@@ -33,7 +39,10 @@ def main():
     with open(dataset_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    logger.info(f"Loaded {len(data)} evaluation questions.")
+    # User requested reducing load due to laptop thermal constraints
+    data = data[:25]
+    
+    logger.info(f"Loaded {len(data)} evaluation questions (limited to 25).")
 
     questions = []
     answers = []
@@ -102,9 +111,10 @@ def main():
         
         # Save summary to JSON
         summary_path = Path(project_root) / "data" / "evaluation_summary.json"
+        # We compute the mean from the DataFrame to avoid Ragas API changes
+        summary_dict = df[['faithfulness', 'answer_relevancy', 'context_precision']].mean().fillna(0).to_dict()
         with open(summary_path, "w", encoding="utf-8") as f:
-            # Convert RagasResult to dict (it behaves like a dict for its scores)
-            json.dump({k: float(v) for k, v in eval_result.items()}, f, indent=4)
+            json.dump(summary_dict, f, indent=4)
         logger.info(f"Summary saved to {summary_path}")
         
     except Exception as e:

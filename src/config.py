@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # ── LLM provider ──────────────────────────────────────────────────────────
-    llm_provider: Literal["openai", "ollama", "anthropic", "openrouter", "huggingface"] = Field(
+    llm_provider: Literal["openai", "ollama", "anthropic", "openrouter", "huggingface", "gemini"] = Field(
         default="ollama",
         description="Which LLM backend to use.",
     )
@@ -58,6 +58,9 @@ class Settings(BaseSettings):
 
     # ── HuggingFace ───────────────────────────────────────────────────────────
     huggingface_api_key: str = Field(default="", description="HuggingFace API key.")
+
+    # ── Gemini (Google AI Studio) ─────────────────────────────────────────────
+    gemini_api_key: str = Field(default="", description="Google Gemini API key.")
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     qdrant_url: str = Field(

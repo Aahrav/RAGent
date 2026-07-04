@@ -25,6 +25,8 @@ dependencies = [
     "ragas>=0.1.0",
     "duckduckgo-search>=6.0.0",
     "langchain-huggingface>=1.2.2",
+    "langchain-google-vertexai>=3.2.4",
+    "langchain-google-genai>=4.2.6",
 ]
 
 [project.optional-dependencies]

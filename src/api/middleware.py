@@ -15,28 +15,14 @@ from contextvars import ContextVar
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Histogram, Gauge
 
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-# ── Context Variables ──────────────────────────────────────────────────────────
-
-# This variable holds the request ID for the current async task.
-# It is thread-safe and async-safe.
-_request_id_ctx_var: ContextVar[str] = ContextVar("request_id", default="")
-
-
-def get_request_id() -> str:
-    """Retrieve the request ID for the current request context.
-    
-    Any file (e.g. vector_db, generator) can call this to tag its logs,
-    without needing the ID passed as a function argument.
-    """
-    return _request_id_ctx_var.get()
-
+from src.utils.request_context import set_request_id, reset_request_id
 
 # ── Part 1: Request ID Middleware ──────────────────────────────────────────────
 
@@ -55,7 +41,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         
         # 2. Set the context variable for the duration of this request
-        token = _request_id_ctx_var.set(request_id)
+        token = set_request_id(request_id)
         
         try:
             # 3. Pass control to the rest of the application
@@ -67,7 +53,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             
         finally:
             # 5. Clean up the context variable
-            _request_id_ctx_var.reset(token)
+            reset_request_id(token)
 
 
 # ── Part 2: Request Logging & Timing Middleware ────────────────────────────────

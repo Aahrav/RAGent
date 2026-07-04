@@ -36,7 +36,7 @@ class _JsonFormatter(logging.Formatter):
 
         # Automatically inject the request ID if we are inside a request context
         try:
-            from src.api.middleware import get_request_id
+            from src.utils.request_context import get_request_id
             req_id = get_request_id()
             if req_id:
                 payload["request_id"] = req_id
