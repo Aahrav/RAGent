@@ -16,11 +16,14 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware
+from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware, PrometheusMiddleware
 from src.api.routes import chat, health, ingest
 from src.config import get_settings
 from src.ml import embedding
 from src.utils.logger import get_logger
+from prometheus_client import make_asgi_app
+
+from src.services.observability.telemetry import init_telemetry
 
 # ── Part 1: Application Shell & Lifespan ───────────────────────────────────────
 
@@ -46,7 +49,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         },
     )
 
-    # 1. Warm up the embedding model
+    # 1. Initialize OpenTelemetry tracing
+    logger.info("Initializing OpenTelemetry...")
+    init_telemetry()
+    
+    # 2. Warm up the embedding model
     # The first time you embed a sentence, it takes ~2 seconds to load the model
     # weights from disk into memory. We do this at startup so the very first
     # user query doesn't experience a massive latency spike.
@@ -88,7 +95,12 @@ app = FastAPI(
 # and Logging to run second, so we add Logging first, then Context.
 
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(PrometheusMiddleware)
 app.add_middleware(RequestContextMiddleware)
+
+# Expose Prometheus metrics
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 
 # Mount the API routers
