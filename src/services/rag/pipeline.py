@@ -347,11 +347,16 @@ Do not guess or assume internal facts. Always search for them first."""
         )
 
     # =========================================================================
-    # FAST RAG PIPELINE (Phase 1 & 2)
+    # FAST RAG PIPELINE (Phase 1, 2, 4)
     # =========================================================================
     logger.info("Executing Fast RAG Pipeline")
-    # 1. Retrieve
-    chunks = retriever.retrieve(query=user_input)
+    
+    # 1. Rewrite Query (Multi-Query Expansion)
+    from src.services.rag import rewriter
+    queries = rewriter.generate_multi_queries(user_input)
+    
+    # 2. Retrieve (Parallel + RRF)
+    chunks = retriever.multi_retrieve(queries=queries)
 
     if not chunks:
         # Fallback if the database is empty or nothing matches
