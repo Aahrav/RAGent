@@ -119,5 +119,5 @@ tmp/
 temp/
 scratch/
 local_scripts/
-triviaqa-rc.tar.gz/
-triviaqa-rc.tar.gz:Zone.Identifier/
+triviaqa-rc.tar.gz
+*Zone.Identifier
