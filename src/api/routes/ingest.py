@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
+from src.api.auth import rate_limit_dependency
 from src.services.rag import pipeline
 from src.storage import document_store
 from src.utils.logger import get_logger
@@ -22,7 +23,11 @@ logger = get_logger(__name__)
 
 # ── Router ─────────────────────────────────────────────────────────────────────
 
-router = APIRouter(prefix="/ingest", tags=["Ingest"])
+router = APIRouter(
+    prefix="/ingest", 
+    tags=["Ingest"],
+    dependencies=[Depends(rate_limit_dependency)]
+)
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────

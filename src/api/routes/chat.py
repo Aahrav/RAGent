@@ -9,9 +9,10 @@ Flow:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.api.auth import rate_limit_dependency
 from src.services.rag import pipeline
 from src.utils.logger import get_logger
 
@@ -19,7 +20,11 @@ logger = get_logger(__name__)
 
 # ── Router ─────────────────────────────────────────────────────────────────────
 
-router = APIRouter(prefix="/chat", tags=["Chat"])
+router = APIRouter(
+    prefix="/chat", 
+    tags=["Chat"],
+    dependencies=[Depends(rate_limit_dependency)]
+)
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
