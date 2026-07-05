@@ -148,3 +148,67 @@ def set_semantic_cache(query: str, response_data: dict[str, Any]) -> None:
 
     except Exception as e:
         logger.warning("Failed to write to semantic cache", extra={"error": str(e)}, exc_info=True)
+
+
+def check_rate_limit(client_id: str) -> bool:
+    """Check if the client has exceeded the sliding window rate limit.
+    
+    Uses a Redis Sorted Set (ZSET) to maintain an accurate sliding window of 
+    request timestamps. If the number of requests in the window exceeds the limit,
+    it returns False.
+    
+    Args:
+        client_id: A unique identifier for the client (e.g., API key or IP address).
+        
+    Returns:
+        True if the request is allowed, False if the rate limit is exceeded.
+    """
+    settings = get_settings()
+    
+    # If caching is disabled or limits are 0/negative, bypass the rate limiter
+    if not settings.cache_enabled or settings.rate_limit_requests <= 0:
+        return True
+        
+    try:
+        import time
+        client = get_client()
+        
+        current_time = time.time()
+        window_start = current_time - settings.rate_limit_window_seconds
+        
+        key = f"rate_limit:{client_id}"
+        
+        # Use a Redis transaction (pipeline) to execute these commands atomically
+        pipeline = client.pipeline()
+        
+        # 1. Remove all request timestamps older than the sliding window
+        pipeline.zremrangebyscore(key, 0, window_start)
+        
+        # 2. Count how many requests remain in the current window
+        pipeline.zcard(key)
+        
+        # 3. Add the current request's timestamp (using the timestamp as both score and member)
+        pipeline.zadd(key, {str(current_time): current_time})
+        
+        # 4. Refresh the expiration on the key so inactive clients are cleared from memory
+        pipeline.expire(key, settings.rate_limit_window_seconds)
+        
+        results = pipeline.execute()
+        
+        # The result of zcard is the 2nd command in the pipeline (index 1)
+        request_count = results[1]
+        
+        if request_count >= settings.rate_limit_requests:
+            logger.warning("Rate limit exceeded", extra={
+                "client_id": client_id, 
+                "count": request_count,
+                "limit": settings.rate_limit_requests
+            })
+            return False
+            
+        return True
+        
+    except Exception as e:
+        # If Redis goes down, we "fail open" so legitimate traffic isn't blocked
+        logger.error("Rate limiter failed, allowing request (fail-open)", extra={"error": str(e)})
+        return True
