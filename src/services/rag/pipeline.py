@@ -351,6 +351,22 @@ Do not guess or assume internal facts. Always search for them first."""
     # =========================================================================
     logger.info("Executing Fast RAG Pipeline")
     
+    # 0. Check Semantic Cache
+    from src.storage import cache
+    cached_data = cache.check_semantic_cache(user_input)
+    if cached_data:
+        from src.services.rag.models import Citation
+        citations = [Citation(**c) for c in cached_data.get("citations", [])]
+        
+        return QueryResult(
+            answer=cached_data.get("answer", ""),
+            citations=citations,
+            latency_ms=_elapsed(start_time) * 1000,
+            confidence=cached_data.get("confidence", 1.0),
+            fallback_triggered=cached_data.get("fallback_triggered", False),
+            tools_used=["semantic_cache"]
+        )
+    
     # 1. Rewrite Query (Multi-Query Expansion)
     from src.services.rag import rewriter
     queries = rewriter.generate_multi_queries(user_input)
@@ -404,10 +420,16 @@ Do not guess or assume internal facts. Always search for them first."""
         },
     )
 
-    return QueryResult(
+    result = QueryResult(
         answer=answer,
         citations=citations,
         latency_ms=latency_ms,
         confidence=overall_confidence,
         fallback_triggered=fallback_triggered
     )
+    
+    # Populate the cache if this was a successful, confident answer
+    if not fallback_triggered:
+        cache.set_semantic_cache(user_input, result.to_dict())
+        
+    return result
