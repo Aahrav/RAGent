@@ -118,3 +118,6 @@ embeddings_cache/
 tmp/
 temp/
 scratch/
+local_scripts/
+triviaqa-rc.tar.gz
+*Zone.Identifier
