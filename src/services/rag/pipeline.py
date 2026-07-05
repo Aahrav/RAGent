@@ -433,3 +433,106 @@ Do not guess or assume internal facts. Always search for them first."""
         cache.set_semantic_cache(user_input, result.to_dict())
         
     return result
+
+
+def stream_query(user_input: str) -> typing.Generator[str, None, None]:
+    """Execute the RAG query pipeline and stream the response.
+    
+    Yields JSON-encoded strings. Standard chunks look like:
+      {"chunk": "Hello"}
+    The final chunk contains metadata:
+      {"metadata": {"citations": [...], "confidence": 0.95, "latency_ms": 1200.5}}
+      
+    Args:
+        user_input: The question asked by the user.
+        
+    Yields:
+        JSON strings for each chunk and final metadata.
+    """
+    import json
+    import typing
+    
+    start_time = time.perf_counter()
+    logger.info("Streaming Query started", extra={"query": user_input})
+    
+    # 0. Safety Check
+    from src.services.guardrails.safety import check_safety
+    try:
+        check_safety(user_input)
+    except ValueError as e:
+        logger.warning("Safety check failed", extra={"error": str(e)})
+        yield json.dumps({"error": "I'm sorry, I cannot fulfill this request because it violates safety policies."})
+        return
+
+    # 1. Check Semantic Cache
+    from src.storage import cache
+    cached_data = cache.check_semantic_cache(user_input)
+    if cached_data:
+        # If cache hits, we can yield the full answer instantly
+        yield json.dumps({"chunk": cached_data.get("answer", "")})
+        
+        metadata = {
+            "citations": cached_data.get("citations", []),
+            "latency_ms": _elapsed(start_time) * 1000,
+            "confidence": cached_data.get("confidence", 1.0),
+            "fallback_triggered": cached_data.get("fallback_triggered", False),
+            "tools_used": ["semantic_cache"]
+        }
+        yield json.dumps({"metadata": metadata})
+        return
+        
+    # 2. Rewrite Query & Retrieve
+    from src.services.rag import rewriter
+    queries = rewriter.generate_multi_queries(user_input)
+    chunks = retriever.multi_retrieve(queries=queries)
+
+    if not chunks:
+        yield json.dumps({"chunk": "I don't have any ingested documents to answer that question."})
+        return
+        
+    # 3. Stream LLM output
+    full_answer = ""
+    for token in generator.stream_answer(user_input, chunks):
+        full_answer += token
+        yield json.dumps({"chunk": token})
+        
+    # 4. Calculate Guardrails & Citations on the FULL answer
+    from src.services.guardrails.scorer import calculate_groundedness
+    from src.services.guardrails.citations import extract_citations
+    from src.config import get_settings
+    
+    settings = get_settings()
+    overall_confidence = calculate_groundedness(full_answer, chunks)
+    citations = extract_citations(chunks)
+    
+    fallback_triggered = False
+    if overall_confidence < settings.confidence_threshold:
+        # We already streamed the text, so we can't redact it.
+        # But we flag it in metadata so the UI can warn the user.
+        fallback_triggered = True
+        logger.warning(
+            "Hallucination detected in stream",
+            extra={"confidence": overall_confidence, "threshold": settings.confidence_threshold}
+        )
+        
+    metadata = {
+        "citations": [c.to_dict() for c in citations] if citations else [],
+        "latency_ms": _elapsed(start_time) * 1000,
+        "confidence": overall_confidence,
+        "fallback_triggered": fallback_triggered,
+        "tools_used": []
+    }
+    
+    yield json.dumps({"metadata": metadata})
+    
+    # 5. Populate Semantic Cache
+    if not fallback_triggered:
+        result_dict = {
+            "answer": full_answer,
+            "citations": metadata["citations"],
+            "latency_ms": metadata["latency_ms"],
+            "confidence": metadata["confidence"],
+            "fallback_triggered": metadata["fallback_triggered"],
+            "tools_used": metadata["tools_used"]
+        }
+        cache.set_semantic_cache(user_input, result_dict)
