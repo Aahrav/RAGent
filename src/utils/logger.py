@@ -34,12 +34,18 @@ class _JsonFormatter(logging.Formatter):
             "line": record.lineno,
         }
 
-        # Automatically inject the request ID if we are inside a request context
+        # Automatically inject the context IDs if we are inside a request context
         try:
-            from src.utils.request_context import get_request_id
+            from src.utils.request_context import get_request_id, get_user_id
+            
             req_id = get_request_id()
             if req_id:
                 payload["request_id"] = req_id
+                
+            usr_id = get_user_id()
+            if usr_id and usr_id != "anonymous":
+                payload["user_id"] = usr_id
+                
         except ImportError:
             # Middleware module might not be fully initialized yet
             pass

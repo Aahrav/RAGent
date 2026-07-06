@@ -88,6 +88,20 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Wait for the route (/chat, /ingest) to process the request
             response = await call_next(request)
             
+            # --- ATTACH USER ID TO SPAN ---
+            try:
+                from src.utils.request_context import get_user_id
+                from opentelemetry import trace
+                
+                user_id = get_user_id()
+                if user_id and user_id != "anonymous":
+                    current_span = trace.get_current_span()
+                    if current_span and current_span.is_recording():
+                        current_span.set_attribute("user.id", user_id)
+            except Exception:
+                pass
+            # ------------------------------
+            
             latency_ms = (time.perf_counter() - start_time) * 1000
             
             if not is_healthcheck:

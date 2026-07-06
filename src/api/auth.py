@@ -80,6 +80,10 @@ def rate_limit_dependency(
         
     client_id = api_key if api_key else client_ip
     
+    # ── Context Observability: Set the User ID for Logs/Traces ──
+    from src.utils.request_context import set_user_id
+    set_user_id(client_id)
+    
     if not check_rate_limit(client_id):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
