@@ -46,6 +46,7 @@ from src.services.rag.models import Chunk, Citation, IngestResult, QueryResult
 from src.services.rag.text_splitter import split_documents
 from src.storage import document_store, vector_db
 from src.utils.logger import get_logger
+from src.services.observability import metrics
 
 logger = get_logger(__name__)
 
@@ -291,6 +292,7 @@ def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
         check_safety(user_input)
     except ValueError as e:
         logger.warning("Safety check failed", extra={"error": str(e)})
+        metrics.RAG_QUERIES_TOTAL.labels(status="safety_blocked").inc()
         return QueryResult(
             answer="I'm sorry, I cannot fulfill this request because it violates safety policies.",
             citations=[],
@@ -337,6 +339,7 @@ Do not guess or assume internal facts. Always search for them first."""
                     tools_used.append(call["name"])
         
         latency_ms = _elapsed(start_time) * 1000
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
         return QueryResult(
             answer=final_message,
             citations=[],  # Agent handles its own citing directly in text for now
@@ -355,6 +358,8 @@ Do not guess or assume internal facts. Always search for them first."""
     from src.storage import cache
     cached_data = cache.check_semantic_cache(user_input)
     if cached_data:
+        metrics.SEMANTIC_CACHE_HITS.inc()
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
         from src.services.rag.models import Citation
         citations = [Citation(**c) for c in cached_data.get("citations", [])]
         
@@ -367,12 +372,15 @@ Do not guess or assume internal facts. Always search for them first."""
             tools_used=["semantic_cache"]
         )
     
+    metrics.SEMANTIC_CACHE_MISSES.inc()
+    
     # 1. Rewrite Query (Multi-Query Expansion)
     from src.services.rag import rewriter
     queries = rewriter.generate_multi_queries(user_input)
     
     # 2. Retrieve (Parallel + RRF)
     chunks = retriever.multi_retrieve(queries=queries)
+    metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
     if not chunks:
         # Fallback if the database is empty or nothing matches
@@ -396,6 +404,7 @@ Do not guess or assume internal facts. Always search for them first."""
     settings = get_settings()
     
     overall_confidence = calculate_groundedness(answer, chunks)
+    metrics.LLM_CONFIDENCE_SCORE.observe(overall_confidence)
     citations = extract_citations(chunks)
     
     fallback_triggered = False
@@ -432,6 +441,7 @@ Do not guess or assume internal facts. Always search for them first."""
     if not fallback_triggered:
         cache.set_semantic_cache(user_input, result.to_dict())
         
+    metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
     return result
 
 
@@ -461,6 +471,7 @@ def stream_query(user_input: str) -> typing.Generator[str, None, None]:
         check_safety(user_input)
     except ValueError as e:
         logger.warning("Safety check failed", extra={"error": str(e)})
+        metrics.RAG_QUERIES_TOTAL.labels(status="safety_blocked").inc()
         yield json.dumps({"error": "I'm sorry, I cannot fulfill this request because it violates safety policies."})
         return
 
@@ -468,6 +479,8 @@ def stream_query(user_input: str) -> typing.Generator[str, None, None]:
     from src.storage import cache
     cached_data = cache.check_semantic_cache(user_input)
     if cached_data:
+        metrics.SEMANTIC_CACHE_HITS.inc()
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
         # If cache hits, we can yield the full answer instantly
         yield json.dumps({"chunk": cached_data.get("answer", "")})
         
@@ -481,10 +494,13 @@ def stream_query(user_input: str) -> typing.Generator[str, None, None]:
         yield json.dumps({"metadata": metadata})
         return
         
+    metrics.SEMANTIC_CACHE_MISSES.inc()
+        
     # 2. Rewrite Query & Retrieve
     from src.services.rag import rewriter
     queries = rewriter.generate_multi_queries(user_input)
     chunks = retriever.multi_retrieve(queries=queries)
+    metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
     if not chunks:
         yield json.dumps({"chunk": "I don't have any ingested documents to answer that question."})
@@ -503,6 +519,7 @@ def stream_query(user_input: str) -> typing.Generator[str, None, None]:
     
     settings = get_settings()
     overall_confidence = calculate_groundedness(full_answer, chunks)
+    metrics.LLM_CONFIDENCE_SCORE.observe(overall_confidence)
     citations = extract_citations(chunks)
     
     fallback_triggered = False
@@ -536,3 +553,5 @@ def stream_query(user_input: str) -> typing.Generator[str, None, None]:
             "tools_used": metadata["tools_used"]
         }
         cache.set_semantic_cache(user_input, result_dict)
+        
+    metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()

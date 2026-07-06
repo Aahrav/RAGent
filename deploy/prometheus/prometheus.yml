@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "ragent-api"
+    # When running in docker-compose on Linux, host.docker.internal requires extra-hosts
+    # or we can use the exact service name if the app is containerized.
+    # Since the user is currently running uvicorn locally (outside docker),
+    # we use host.docker.internal to reach the host machine.
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
