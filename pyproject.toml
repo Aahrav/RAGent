@@ -28,6 +28,7 @@ dependencies = [
     "langchain-google-vertexai>=3.2.4",
     "langchain-google-genai>=4.2.6",
     "prometheus-fastapi-instrumentator>=8.0.2",
+    "opentelemetry-instrumentation-fastapi>=0.64b0",
 ]
 
 [project.optional-dependencies]

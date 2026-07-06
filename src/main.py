@@ -99,6 +99,10 @@ app.add_middleware(RequestContextMiddleware)
 from prometheus_fastapi_instrumentator import Instrumentator
 Instrumentator().instrument(app).expose(app)
 
+# Instrument FastAPI with OpenTelemetry (Jaeger Traces)
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+FastAPIInstrumentor.instrument_app(app)
+
 
 # Mount the API routers
 # Each router handles a specific domain (e.g. all /chat endpoints)
