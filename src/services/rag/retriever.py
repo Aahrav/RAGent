@@ -67,8 +67,11 @@ def retrieve(
         extra={"query": query, "top_k": top_k, "collection": collection},
     )
 
-    # 1. Convert the query text into a semantic vector
+    # 1. Convert the query text into a semantic vector and a sparse vector
     query_vector = embed_one(query)
+    
+    from src.ml.embedding import embed_sparse_one
+    sparse_query_vector = embed_sparse_one(query)
 
     # 2. Search Qdrant for the closest chunk vectors
     try:
@@ -78,6 +81,7 @@ def retrieve(
             top_k=top_k,
             score_threshold=score_threshold,
             filters=filters,
+            sparse_query_vector=sparse_query_vector,
         )
     except Exception as exc:
         logger.error(

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 from src.config import get_settings
 from src.ml.embedding import embed
@@ -154,6 +155,10 @@ def ingest(sources: list[str]) -> IngestResult:
         [c.text for c in chunks],
         batch_size=_EMBED_BATCH_SIZE,
     )
+    all_sparse_vectors = _embed_sparse_in_batches(
+        [c.text for c in chunks],
+        batch_size=_EMBED_BATCH_SIZE,
+    )
 
     logger.info("Embedding complete", extra={"vectors": len(all_vectors)})
 
@@ -176,6 +181,7 @@ def ingest(sources: list[str]) -> IngestResult:
         collection=settings.qdrant_collection,
         vectors=all_vectors,
         payloads=payloads,
+        sparse_vectors=all_sparse_vectors,
         # IDs are auto-generated (UUID4) — no need to pass them
     )
 
@@ -250,6 +256,34 @@ def _embed_in_batches(
         )
 
         vectors = embed(batch)
+        all_vectors.extend(vectors)
+
+    return all_vectors
+
+def _embed_sparse_in_batches(
+    texts: list[str],
+    batch_size: int = _EMBED_BATCH_SIZE,
+) -> list[Any]:
+    """Embed a large list of texts in fixed-size batches for sparse vectors."""
+    from src.ml.embedding import embed_sparse
+    
+    all_vectors = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(texts))
+        batch = texts[start_idx:end_idx]
+
+        logger.debug(
+            "Sparse embedding batch",
+            extra={
+                "batch": f"{batch_num + 1}/{total_batches}",
+                "size": len(batch),
+            },
+        )
+
+        vectors = embed_sparse(batch)
         all_vectors.extend(vectors)
 
     return all_vectors
