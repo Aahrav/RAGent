@@ -62,10 +62,15 @@ def ensure_collection(name: str, vector_size: int) -> None:
     if name not in existing:
         client.create_collection(
             collection_name=name,
-            vectors_config=qmodels.VectorParams(
-                size=vector_size,
-                distance=qmodels.Distance.COSINE,
-            ),
+            vectors_config={
+                "dense": qmodels.VectorParams(
+                    size=vector_size,
+                    distance=qmodels.Distance.COSINE,
+                )
+            },
+            sparse_vectors_config={
+                "sparse": qmodels.SparseVectorParams(),
+            },
         )
         logger.info(
             "Qdrant collection created",
@@ -90,6 +95,7 @@ def upsert_points(
     vectors: list[list[float]],
     payloads: list[dict[str, Any]],
     ids: list[str] | None = None,
+    sparse_vectors: list[Any] | None = None,
 ) -> list[str]:
     """Store vectors with their metadata payloads.
 
@@ -99,6 +105,7 @@ def upsert_points(
         payloads: List of metadata dicts — same length as vectors.
                   Should contain at least: text, source, page, chunk_index.
         ids: Optional list of string IDs. Generated (UUID4) if not provided.
+        sparse_vectors: Optional list of SparseEmbedding objects for hybrid search.
 
     Returns:
         List of IDs that were upserted.
@@ -109,14 +116,22 @@ def upsert_points(
     if ids is None:
         ids = [str(uuid.uuid4()) for _ in vectors]
 
-    points = [
-        qmodels.PointStruct(
-            id=_str_to_uuid(point_id),
-            vector=vector,
-            payload=payload,
+    sparse_list = sparse_vectors or [None] * len(vectors)
+    points = []
+    for point_id, vector, payload, sparse_vec in zip(ids, vectors, payloads, sparse_list):
+        vector_dict = {"dense": vector}
+        if sparse_vec:
+            vector_dict["sparse"] = qmodels.SparseVector(
+                indices=sparse_vec.indices, values=sparse_vec.values
+            )
+            
+        points.append(
+            qmodels.PointStruct(
+                id=_str_to_uuid(point_id),
+                vector=vector_dict,
+                payload=payload,
+            )
         )
-        for point_id, vector, payload in zip(ids, vectors, payloads)
-    ]
 
     client = get_client()
     
@@ -142,15 +157,17 @@ def search(
     top_k: int = 5,
     score_threshold: float = 0.0,
     filters: dict[str, Any] | None = None,
+    sparse_query_vector: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Find the top-k most similar vectors to the query vector.
 
     Args:
         collection: Collection to search in.
-        query_vector: Embedding of the user's query.
+        query_vector: Dense embedding of the user's query.
         top_k: Number of results to return.
         score_threshold: Minimum cosine similarity score (0.0 = no filter).
         filters: Optional Qdrant filter dict for metadata-based pre-filtering.
+        sparse_query_vector: Optional SparseEmbedding for Hybrid RRF Search.
 
     Returns:
         List of dicts with keys: ``id``, ``score``, and all payload fields
@@ -169,14 +186,45 @@ def search(
         ]
         qdrant_filter = qmodels.Filter(must=conditions)
 
-    results = client.query_points(
-        collection_name=collection,
-        query=query_vector,
-        limit=top_k,
-        score_threshold=score_threshold if score_threshold > 0 else None,
-        query_filter=qdrant_filter,
-        with_payload=True,
-    ).points
+    if sparse_query_vector:
+        # Hybrid Search: use Prefetch to run both dense and sparse queries,
+        # then merge them natively using Reciprocal Rank Fusion (RRF).
+        prefetch = [
+            qmodels.Prefetch(
+                query=qmodels.SparseVector(
+                    indices=sparse_query_vector.indices, 
+                    values=sparse_query_vector.values
+                ),
+                using="sparse",
+                limit=top_k * 2,
+            ),
+            qmodels.Prefetch(
+                query=query_vector,
+                using="dense",
+                limit=top_k * 2,
+            ),
+        ]
+        
+        results = client.query_points(
+            collection_name=collection,
+            prefetch=prefetch,
+            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+            limit=top_k,
+            score_threshold=score_threshold if score_threshold > 0 else None,
+            query_filter=qdrant_filter,
+            with_payload=True,
+        ).points
+    else:
+        # Pure Semantic Search (fallback)
+        results = client.query_points(
+            collection_name=collection,
+            query=query_vector,
+            using="dense",
+            limit=top_k,
+            score_threshold=score_threshold if score_threshold > 0 else None,
+            query_filter=qdrant_filter,
+            with_payload=True,
+        ).points
 
     hits = []
     for r in results:

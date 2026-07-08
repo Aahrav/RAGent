@@ -29,6 +29,7 @@ dependencies = [
     "langchain-google-genai>=4.2.6",
     "prometheus-fastapi-instrumentator>=8.0.2",
     "opentelemetry-instrumentation-fastapi>=0.64b0",
+    "fastembed>=0.8.0",
 ]
 
 [project.optional-dependencies]
