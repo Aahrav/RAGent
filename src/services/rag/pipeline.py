@@ -299,7 +299,7 @@ def _elapsed(start: float) -> float:
 from langsmith import traceable
 
 @traceable(name="ragent_pipeline")
-def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
+def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
@@ -313,6 +313,7 @@ def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
     Args:
         user_input: The question asked by the user.
         use_agent: Optional override for the semantic router.
+        session_id: Optional session ID for conversational memory.
 
     Returns:
         :class:`QueryResult` containing the answer, citations, and metadata.
@@ -354,13 +355,16 @@ When asked complex questions involving both internal company knowledge (e.g. "Pr
 2. Second, use `web_search` to find the live public information using the facts you just learned.
 Do not guess or assume internal facts. Always search for them first."""
 
+        # The config object tells LangGraph which memory thread to load/save to
+        config = {"configurable": {"thread_id": session_id}} if session_id else None
+
         # Invoke the LangGraph agent with the system prompt and the user's query
         final_state = agent_app.invoke({
             "messages": [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_input)
             ]
-        })
+        }, config=config)
         
         # The final message is the last AI message in the state
         final_message = final_state["messages"][-1].content
@@ -479,7 +483,7 @@ Do not guess or assume internal facts. Always search for them first."""
     return result
 
 
-def stream_query(user_input: str) -> typing.Generator[str, None, None]:
+def stream_query(user_input: str, session_id: str | None = None) -> typing.Generator[str, None, None]:
     """Execute the RAG query pipeline and stream the response.
     
     Yields JSON-encoded strings. Standard chunks look like:

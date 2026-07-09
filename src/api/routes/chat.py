@@ -9,6 +9,7 @@ Flow:
 
 from __future__ import annotations
 
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -57,6 +58,10 @@ class ChatRequest(BaseModel):
     use_agent: bool | None = Field(
         default=None,
         description="Override the automatic router. True forces the Agent, False forces standard RAG.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session ID for conversational memory. If omitted, a new session is created.",
     )
 
 
@@ -134,12 +139,14 @@ def chat(request: ChatRequest) -> ChatResponse:
         422: If the request body is invalid (handled automatically by FastAPI).
         500: If the retrieval or generation pipeline fails unexpectedly.
     """
-    logger.info("Chat request received", extra={"query": request.query})
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat request received", extra={"query": request.query, "session_id": session_id})
 
     try:
         result = pipeline.query(
             user_input=request.query,
-            use_agent=request.use_agent
+            use_agent=request.use_agent,
+            session_id=session_id
         )
     except Exception as exc:
         logger.error(
@@ -192,11 +199,15 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     Returns:
         A StreamingResponse that yields SSE data packets.
     """
-    logger.info("Chat stream request received", extra={"query": request.query})
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat stream request received", extra={"query": request.query, "session_id": session_id})
 
     def event_generator():
         try:
-            for chunk_json in pipeline.stream_query(user_input=request.query):
+            for chunk_json in pipeline.stream_query(
+                user_input=request.query,
+                session_id=session_id
+            ):
                 # Format as Server-Sent Event (SSE)
                 yield f"data: {chunk_json}\n\n"
         except Exception as exc:
