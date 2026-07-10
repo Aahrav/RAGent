@@ -8,7 +8,6 @@ results, and iterate until it finds the final answer.
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import tools_condition
 from langgraph.checkpoint.redis import RedisSaver
-from redis import Redis
 
 from src.config import get_settings
 from src.services.agent.agent import call_model, tool_node
@@ -43,8 +42,9 @@ workflow.add_edge("tools", "agent")
 # Prod-Grade Memory: We connect to our central Redis instance so state is shared
 # across all API workers and persists across server restarts.
 settings = get_settings()
-# Setup a connection pool to Redis
-redis_conn = Redis.from_url(settings.redis_url)
-memory = RedisSaver(redis_conn)
+
+# We pass the URL directly, and RedisSaver handles the connection pool internally
+memory = RedisSaver(settings.redis_url)
+memory.setup() # <--- Creates the RediSearch indexes if they don't exist
 
 agent_app = workflow.compile(checkpointer=memory)

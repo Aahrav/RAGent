@@ -69,8 +69,11 @@ def _get_sparse_model() -> "SparseTextEmbedding":
 
         from fastembed import SparseTextEmbedding
 
-        logger.info("Loading sparse embedding model", extra={"model": "prithivida/Splade_PP_en_v1"})
-        _sparse_model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1")
+        logger.info("Loading sparse embedding model", extra={"model": "Qdrant/bm25"})
+        _sparse_model = SparseTextEmbedding(
+            model_name="Qdrant/bm25",
+            cache_dir="/app/data/fastembed_cache"
+        )
         logger.info("Sparse embedding model loaded")
 
     return _sparse_model

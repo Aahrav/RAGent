@@ -42,9 +42,10 @@ def route_query(query: str) -> bool:
         
         system_prompt = (
             "You are a routing expert. Your job is to classify user queries into one of two buckets:\n"
-            "1. 'RAG' - The query asks about internal company policies, Project Apollo, or proprietary data.\n"
-            "2. 'AGENT' - The query asks about general knowledge, public figures, consumer products, live weather, stock prices, or math calculations.\n"
-            "If in doubt or the query is very vague (like 'loq laptop' or 'meta ceo'), route to 'AGENT'."
+            "1. 'RAG' - The query asks ONLY about internal company policies, Project Apollo, or proprietary data.\n"
+            "2. 'AGENT' - The query asks about general knowledge, live internet data, stock prices, OR requires multiple steps combining internal and external data.\n"
+            "CRITICAL RULE: If the query asks for internal data (like Project Apollo) AND external data (like stock prices), you MUST route to 'AGENT' because standard RAG cannot access the internet.\n"
+            "If in doubt, route to 'AGENT'."
         )
         
         messages = [

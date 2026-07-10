@@ -202,6 +202,7 @@ def search(
                 query=query_vector,
                 using="dense",
                 limit=top_k * 2,
+                score_threshold=0.25, # Filter out completely unrelated chunks before RRF
             ),
         ]
         

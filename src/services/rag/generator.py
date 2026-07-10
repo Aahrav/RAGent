@@ -27,9 +27,10 @@ Your task is to answer the user's question based strictly and ONLY on the provid
 
 Rules:
 1. You must ONLY use information found in the CONTEXT below.
-2. If the CONTEXT does not contain the answer, you must say: "I cannot answer this based on the provided documents." Do not guess or use outside knowledge.
-3. Be concise, direct, and factual.
-4. Do not mention that you are reading from a context block. Just provide the answer.
+2. You are allowed to use semantic reasoning (e.g. recognizing that "Project Lead" means "Project Manager").
+3. If the CONTEXT does not contain the answer at all, you must say: "I cannot answer this based on the provided documents." Do not guess or use outside knowledge.
+4. Be concise, direct, and factual.
+5. Do not mention that you are reading from a context block. Just provide the answer.
 """
 
 _HUMAN_PROMPT_TEMPLATE = """CONTEXT:
