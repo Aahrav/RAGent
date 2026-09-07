@@ -442,14 +442,21 @@ Do not guess or assume internal facts. Always search for them first."""
     # 2. Rewrite Query (Multi-Query Expansion)
     queries = rewriter.generate_multi_queries(search_query)
     
-    # 2.5 Retrieve User Facts
-    user_facts = []
+    # 3. Retrieve (Parallel + RRF)
+    chunks = retriever.multi_retrieve(queries=queries)
+
+    # 3.5 Retrieve User Facts
     if user_id:
         from src.services.agent.memory import retrieve_user_facts
         user_facts = retrieve_user_facts(user_id, search_query)
-
-    # 3. Retrieve (Parallel + RRF)
-    chunks = retriever.multi_retrieve(queries=queries)
+        if user_facts:
+            from src.services.rag.models import Chunk
+            fact_chunk = Chunk(
+                text="--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts),
+                source="User Memory",
+                page=1,
+            )
+            chunks.append(fact_chunk)
     metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
     if not chunks:
@@ -464,7 +471,6 @@ Do not guess or assume internal facts. Always search for them first."""
     answer = generator.generate_answer(
         query=search_query,
         context_chunks=chunks,
-        user_facts=user_facts,
     )
 
     # 3 & 4. Guardrails (Groundedness and Citations)
@@ -593,13 +599,20 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 3. Rewrite Query & Retrieve
     queries = rewriter.generate_multi_queries(search_query)
+    chunks = retriever.multi_retrieve(queries=queries)
     
-    user_facts = []
+    # 3.5 Retrieve User Facts
     if user_id:
         from src.services.agent.memory import retrieve_user_facts
         user_facts = retrieve_user_facts(user_id, search_query)
-        
-    chunks = retriever.multi_retrieve(queries=queries)
+        if user_facts:
+            from src.services.rag.models import Chunk
+            fact_chunk = Chunk(
+                text="--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts),
+                source="User Memory",
+                page=1,
+            )
+            chunks.append(fact_chunk)
     metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
     if not chunks:
@@ -608,7 +621,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 4. Stream LLM output
     full_answer = ""
-    for token in generator.stream_answer(search_query, chunks, user_facts):
+    for token in generator.stream_answer(search_query, chunks):
         full_answer += token
         yield json.dumps({"chunk": token})
         

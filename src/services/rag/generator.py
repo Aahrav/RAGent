@@ -31,9 +31,6 @@ Rules:
 3. If the CONTEXT does not contain the answer at all, you must say: "I cannot answer this based on the provided documents." Do not guess or use outside knowledge.
 4. Be concise, direct, and factual.
 5. Do not mention that you are reading from a context block. Just provide the answer.
-
-Here are some known facts about the user that you may use to personalize your response if relevant:
-{user_facts}
 """
 
 _HUMAN_PROMPT_TEMPLATE = """CONTEXT:
@@ -71,6 +68,11 @@ def generate_answer(query: str, context_chunks: list[Chunk], user_facts: list[st
             f"--- Document {i} (Source: {chunk.source}, Page: {chunk.page}) ---\n"
             f"{chunk.text}"
         )
+        
+    if user_facts:
+        formatted_context_parts.append(
+            "--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts)
+        )
     
     context_text = "\n\n".join(formatted_context_parts)
 
@@ -88,11 +90,8 @@ def generate_answer(query: str, context_chunks: list[Chunk], user_facts: list[st
         },
     )
 
-    facts_str = "\n".join(f"- {f}" for f in user_facts) if user_facts else "None provided."
-    system_prompt = _SYSTEM_PROMPT.format(user_facts=facts_str)
-
     messages = [
-        SystemMessage(content=system_prompt),
+        SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=human_prompt),
     ]
 
@@ -137,6 +136,11 @@ def stream_answer(query: str, context_chunks: list[Chunk], user_facts: list[str]
             f"--- Document {i} (Source: {chunk.source}, Page: {chunk.page}) ---\n"
             f"{chunk.text}"
         )
+        
+    if user_facts:
+        formatted_context_parts.append(
+            "--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts)
+        )
     
     context_text = "\n\n".join(formatted_context_parts)
 
@@ -154,11 +158,8 @@ def stream_answer(query: str, context_chunks: list[Chunk], user_facts: list[str]
         },
     )
 
-    facts_str = "\n".join(f"- {f}" for f in user_facts) if user_facts else "None provided."
-    system_prompt = _SYSTEM_PROMPT.format(user_facts=facts_str)
-
     messages = [
-        SystemMessage(content=system_prompt),
+        SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=human_prompt),
     ]
 
