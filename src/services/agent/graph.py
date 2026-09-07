@@ -7,7 +7,9 @@ results, and iterate until it finds the final answer.
 
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import tools_condition
+from langgraph.checkpoint.redis import RedisSaver
 
+from src.config import get_settings
 from src.services.agent.agent import call_model, tool_node
 from src.services.agent.state import AgentState
 
@@ -37,4 +39,12 @@ workflow.add_conditional_edges("agent", tools_condition)
 workflow.add_edge("tools", "agent")
 
 # 4. Compile the graph into an executable runnable
-agent_app = workflow.compile()
+# Prod-Grade Memory: We connect to our central Redis instance so state is shared
+# across all API workers and persists across server restarts.
+settings = get_settings()
+
+# We pass the URL directly, and RedisSaver handles the connection pool internally
+memory = RedisSaver(settings.redis_url)
+memory.setup() # <--- Creates the RediSearch indexes if they don't exist
+
+agent_app = workflow.compile(checkpointer=memory)

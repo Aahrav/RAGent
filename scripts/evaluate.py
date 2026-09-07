@@ -15,6 +15,15 @@ import sys
 import unittest.mock
 sys.modules['langchain_community.chat_models.vertexai'] = unittest.mock.MagicMock()
 
+# Workaround for RagasTracer not implementing on_chat_model_start in newer langchain-core
+from ragas.callbacks import RagasTracer
+if not hasattr(RagasTracer, 'on_chat_model_start'):
+    def on_chat_model_start(self, *args, **kwargs): pass
+    RagasTracer.on_chat_model_start = on_chat_model_start
+if not hasattr(RagasTracer, 'on_chat_model_end'):
+    def on_chat_model_end(self, *args, **kwargs): pass
+    RagasTracer.on_chat_model_end = on_chat_model_end
+
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy, context_precision
 

@@ -9,9 +9,12 @@ Flow:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.api.auth import rate_limit_dependency
 from src.services.rag import pipeline
 from src.utils.logger import get_logger
 
@@ -19,7 +22,11 @@ logger = get_logger(__name__)
 
 # ── Router ─────────────────────────────────────────────────────────────────────
 
-router = APIRouter(prefix="/chat", tags=["Chat"])
+router = APIRouter(
+    prefix="/chat", 
+    tags=["Chat"],
+    dependencies=[Depends(rate_limit_dependency)]
+)
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
@@ -51,6 +58,14 @@ class ChatRequest(BaseModel):
     use_agent: bool | None = Field(
         default=None,
         description="Override the automatic router. True forces the Agent, False forces standard RAG.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session ID for conversational memory. If omitted, a new session is created.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID for long-term personalized memory extraction.",
     )
 
 
@@ -128,12 +143,15 @@ def chat(request: ChatRequest) -> ChatResponse:
         422: If the request body is invalid (handled automatically by FastAPI).
         500: If the retrieval or generation pipeline fails unexpectedly.
     """
-    logger.info("Chat request received", extra={"query": request.query})
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat request received", extra={"query": request.query, "session_id": session_id})
 
     try:
         result = pipeline.query(
             user_input=request.query,
-            use_agent=request.use_agent
+            use_agent=request.use_agent,
+            session_id=session_id,
+            user_id=request.user_id,
         )
     except Exception as exc:
         logger.error(
@@ -166,3 +184,46 @@ def chat(request: ChatRequest) -> ChatResponse:
         confidence=result.confidence,
         fallback_triggered=result.fallback_triggered,
     )
+
+
+@router.post(
+    "/stream",
+    summary="Stream an answer (SSE)",
+    description=(
+        "Streams the generated answer using Server-Sent Events (SSE). "
+        "Standard events contain {'chunk': '...'} and the final event "
+        "contains {'metadata': {...}}."
+    ),
+)
+def chat_stream(request: ChatRequest) -> StreamingResponse:
+    """POST /chat/stream — execute a streaming RAG query.
+
+    Args:
+        request: JSON body containing the user's query string.
+
+    Returns:
+        A StreamingResponse that yields SSE data packets.
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat stream request received", extra={"query": request.query, "session_id": session_id})
+
+    def event_generator():
+        try:
+            for chunk_json in pipeline.stream_query(
+                user_input=request.query,
+                session_id=session_id,
+                user_id=request.user_id,
+            ):
+                # Format as Server-Sent Event (SSE)
+                yield f"data: {chunk_json}\n\n"
+        except Exception as exc:
+            logger.error(
+                "Chat stream pipeline failed",
+                extra={"error": str(exc), "query": request.query},
+                exc_info=True,
+            )
+            import json
+            error_json = json.dumps({"error": "An internal error occurred while processing your query."})
+            yield f"data: {error_json}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

@@ -16,13 +16,11 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware, PrometheusMiddleware
+from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware
 from src.api.routes import chat, health, ingest
 from src.config import get_settings
 from src.ml import embedding
 from src.utils.logger import get_logger
-from prometheus_client import make_asgi_app
-
 from src.services.observability.telemetry import init_telemetry
 
 # ── Part 1: Application Shell & Lifespan ───────────────────────────────────────
@@ -95,12 +93,15 @@ app = FastAPI(
 # and Logging to run second, so we add Logging first, then Context.
 
 app.add_middleware(RequestLoggingMiddleware)
-app.add_middleware(PrometheusMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
-# Expose Prometheus metrics
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+# Instrument FastAPI with Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+Instrumentator().instrument(app).expose(app)
+
+# Instrument FastAPI with OpenTelemetry (Jaeger Traces)
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+FastAPIInstrumentor.instrument_app(app)
 
 
 # Mount the API routers

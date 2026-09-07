@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 from src.config import get_settings
 from src.ml.embedding import embed
@@ -46,6 +47,7 @@ from src.services.rag.models import Chunk, Citation, IngestResult, QueryResult
 from src.services.rag.text_splitter import split_documents
 from src.storage import document_store, vector_db
 from src.utils.logger import get_logger
+from src.services.observability import metrics
 
 logger = get_logger(__name__)
 
@@ -153,6 +155,10 @@ def ingest(sources: list[str]) -> IngestResult:
         [c.text for c in chunks],
         batch_size=_EMBED_BATCH_SIZE,
     )
+    all_sparse_vectors = _embed_sparse_in_batches(
+        [c.text for c in chunks],
+        batch_size=_EMBED_BATCH_SIZE,
+    )
 
     logger.info("Embedding complete", extra={"vectors": len(all_vectors)})
 
@@ -175,6 +181,7 @@ def ingest(sources: list[str]) -> IngestResult:
         collection=settings.qdrant_collection,
         vectors=all_vectors,
         payloads=payloads,
+        sparse_vectors=all_sparse_vectors,
         # IDs are auto-generated (UUID4) — no need to pass them
     )
 
@@ -253,6 +260,34 @@ def _embed_in_batches(
 
     return all_vectors
 
+def _embed_sparse_in_batches(
+    texts: list[str],
+    batch_size: int = _EMBED_BATCH_SIZE,
+) -> list[Any]:
+    """Embed a large list of texts in fixed-size batches for sparse vectors."""
+    from src.ml.embedding import embed_sparse
+    
+    all_vectors = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(texts))
+        batch = texts[start_idx:end_idx]
+
+        logger.debug(
+            "Sparse embedding batch",
+            extra={
+                "batch": f"{batch_num + 1}/{total_batches}",
+                "size": len(batch),
+            },
+        )
+
+        vectors = embed_sparse(batch)
+        all_vectors.extend(vectors)
+
+    return all_vectors
+
 
 def _elapsed(start: float) -> float:
     """Return seconds elapsed since ``start`` (from ``time.perf_counter()``)."""
@@ -264,7 +299,7 @@ def _elapsed(start: float) -> float:
 from langsmith import traceable
 
 @traceable(name="ragent_pipeline")
-def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
+def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
@@ -278,6 +313,8 @@ def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
     Args:
         user_input: The question asked by the user.
         use_agent: Optional override for the semantic router.
+        session_id: Optional session ID for conversational memory.
+        user_id: Optional user ID for long-term memory extraction.
 
     Returns:
         :class:`QueryResult` containing the answer, citations, and metadata.
@@ -291,6 +328,7 @@ def query(user_input: str, use_agent: bool | None = None) -> QueryResult:
         check_safety(user_input)
     except ValueError as e:
         logger.warning("Safety check failed", extra={"error": str(e)})
+        metrics.RAG_QUERIES_TOTAL.labels(status="safety_blocked").inc()
         return QueryResult(
             answer="I'm sorry, I cannot fulfill this request because it violates safety policies.",
             citations=[],
@@ -318,13 +356,24 @@ When asked complex questions involving both internal company knowledge (e.g. "Pr
 2. Second, use `web_search` to find the live public information using the facts you just learned.
 Do not guess or assume internal facts. Always search for them first."""
 
+        if user_id:
+            from src.services.agent.memory import retrieve_user_facts
+            agent_facts = retrieve_user_facts(user_id, user_input)
+            if agent_facts:
+                facts_str = "\n".join(f"- {f}" for f in agent_facts)
+                system_prompt += f"\n\nHere are some known facts about the user that you may use to personalize your response if relevant:\n{facts_str}"
+
+
+        # The config object tells LangGraph which memory thread to load/save to
+        config = {"configurable": {"thread_id": session_id}} if session_id else None
+
         # Invoke the LangGraph agent with the system prompt and the user's query
         final_state = agent_app.invoke({
             "messages": [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_input)
             ]
-        })
+        }, config=config)
         
         # The final message is the last AI message in the state
         final_message = final_state["messages"][-1].content
@@ -337,6 +386,7 @@ Do not guess or assume internal facts. Always search for them first."""
                     tools_used.append(call["name"])
         
         latency_ms = _elapsed(start_time) * 1000
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
         return QueryResult(
             answer=final_message,
             citations=[],  # Agent handles its own citing directly in text for now
@@ -351,12 +401,63 @@ Do not guess or assume internal facts. Always search for them first."""
     # =========================================================================
     logger.info("Executing Fast RAG Pipeline")
     
-    # 1. Rewrite Query (Multi-Query Expansion)
+    # 0. Contextualize Query with History (Short-Term Memory)
+    from src.storage.history import get_chat_history, add_to_chat_history
     from src.services.rag import rewriter
-    queries = rewriter.generate_multi_queries(user_input)
     
-    # 2. Retrieve (Parallel + RRF)
+    history = get_chat_history(session_id) if session_id else []
+    search_query = rewriter.condense_question(history, user_input) if history else user_input
+    
+    # 0.5 Extract Long-Term Memory (Background)
+    if user_id:
+        from src.services.agent.memory import extract_and_store_facts
+        import threading
+        threading.Thread(target=extract_and_store_facts, args=(user_id, user_input)).start()
+    
+    # 1. Check Semantic Cache
+    from src.storage import cache
+    cached_data = cache.check_semantic_cache(search_query)
+    if cached_data:
+        metrics.SEMANTIC_CACHE_HITS.inc()
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
+        from src.services.rag.models import Citation
+        citations = [Citation(**c) for c in cached_data.get("citations", [])]
+        
+        # Save to history before returning
+        if session_id:
+            add_to_chat_history(session_id, "user", user_input)
+            add_to_chat_history(session_id, "assistant", cached_data.get("answer", ""))
+            
+        return QueryResult(
+            answer=cached_data.get("answer", ""),
+            citations=citations,
+            latency_ms=_elapsed(start_time) * 1000,
+            confidence=cached_data.get("confidence", 1.0),
+            fallback_triggered=cached_data.get("fallback_triggered", False),
+            tools_used=["semantic_cache"]
+        )
+    
+    metrics.SEMANTIC_CACHE_MISSES.inc()
+    
+    # 2. Rewrite Query (Multi-Query Expansion)
+    queries = rewriter.generate_multi_queries(search_query)
+    
+    # 3. Retrieve (Parallel + RRF)
     chunks = retriever.multi_retrieve(queries=queries)
+
+    # 3.5 Retrieve User Facts
+    if user_id:
+        from src.services.agent.memory import retrieve_user_facts
+        user_facts = retrieve_user_facts(user_id, search_query)
+        if user_facts:
+            from src.services.rag.models import Chunk
+            fact_chunk = Chunk(
+                text="--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts),
+                source="User Memory",
+                page=1,
+            )
+            chunks.append(fact_chunk)
+    metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
     if not chunks:
         # Fallback if the database is empty or nothing matches
@@ -366,9 +467,9 @@ Do not guess or assume internal facts. Always search for them first."""
             latency_ms=_elapsed(start_time) * 1000,
         )
 
-    # 2. Generate
+    # 4. Generate
     answer = generator.generate_answer(
-        query=user_input,
+        query=search_query,
         context_chunks=chunks,
     )
 
@@ -380,6 +481,7 @@ Do not guess or assume internal facts. Always search for them first."""
     settings = get_settings()
     
     overall_confidence = calculate_groundedness(answer, chunks)
+    metrics.LLM_CONFIDENCE_SCORE.observe(overall_confidence)
     citations = extract_citations(chunks)
     
     fallback_triggered = False
@@ -404,10 +506,169 @@ Do not guess or assume internal facts. Always search for them first."""
         },
     )
 
-    return QueryResult(
+    result = QueryResult(
         answer=answer,
         citations=citations,
         latency_ms=latency_ms,
         confidence=overall_confidence,
         fallback_triggered=fallback_triggered
     )
+    
+    # Populate the cache if this was a successful, confident answer
+    if not fallback_triggered:
+        cache.set_semantic_cache(search_query, result.to_dict())
+        
+    if session_id:
+        add_to_chat_history(session_id, "user", user_input)
+        add_to_chat_history(session_id, "assistant", result.answer)
+        
+    metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
+    return result
+
+
+def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None) -> typing.Generator[str, None, None]:
+    """Execute the RAG query pipeline and stream the response.
+    
+    Yields JSON-encoded strings. Standard chunks look like:
+      {"chunk": "Hello"}
+    The final chunk contains metadata:
+      {"metadata": {"citations": [...], "confidence": 0.95, "latency_ms": 1200.5}}
+      
+    Args:
+        user_input: The question asked by the user.
+        session_id: Optional session ID for conversational memory.
+        user_id: Optional user ID for long-term memory extraction.
+        
+    Yields:
+        JSON strings for each chunk and final metadata.
+    """
+    import json
+    import typing
+    
+    start_time = time.perf_counter()
+    logger.info("Streaming Query started", extra={"query": user_input})
+    
+    # 0. Safety Check
+    from src.services.guardrails.safety import check_safety
+    try:
+        check_safety(user_input)
+    except ValueError as e:
+        logger.warning("Safety check failed", extra={"error": str(e)})
+        metrics.RAG_QUERIES_TOTAL.labels(status="safety_blocked").inc()
+        yield json.dumps({"error": "I'm sorry, I cannot fulfill this request because it violates safety policies."})
+        return
+
+    # 1. Contextualize Query with History (Short-Term Memory)
+    from src.storage.history import get_chat_history, add_to_chat_history
+    from src.services.rag import rewriter
+    
+    history = get_chat_history(session_id) if session_id else []
+    search_query = rewriter.condense_question(history, user_input) if history else user_input
+
+    # 1.5 Extract Long-Term Memory (Background)
+    if user_id:
+        from src.services.agent.memory import extract_and_store_facts
+        import threading
+        threading.Thread(target=extract_and_store_facts, args=(user_id, user_input)).start()
+
+    # 2. Check Semantic Cache
+    from src.storage import cache
+    cached_data = cache.check_semantic_cache(search_query)
+    if cached_data:
+        metrics.SEMANTIC_CACHE_HITS.inc()
+        metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
+        
+        if session_id:
+            add_to_chat_history(session_id, "user", user_input)
+            add_to_chat_history(session_id, "assistant", cached_data.get("answer", ""))
+            
+        # If cache hits, we can yield the full answer instantly
+        yield json.dumps({"chunk": cached_data.get("answer", "")})
+        
+        metadata = {
+            "citations": cached_data.get("citations", []),
+            "latency_ms": _elapsed(start_time) * 1000,
+            "confidence": cached_data.get("confidence", 1.0),
+            "fallback_triggered": cached_data.get("fallback_triggered", False),
+            "tools_used": ["semantic_cache"]
+        }
+        yield json.dumps({"metadata": metadata})
+        return
+        
+    metrics.SEMANTIC_CACHE_MISSES.inc()
+        
+    # 3. Rewrite Query & Retrieve
+    queries = rewriter.generate_multi_queries(search_query)
+    chunks = retriever.multi_retrieve(queries=queries)
+    
+    # 3.5 Retrieve User Facts
+    if user_id:
+        from src.services.agent.memory import retrieve_user_facts
+        user_facts = retrieve_user_facts(user_id, search_query)
+        if user_facts:
+            from src.services.rag.models import Chunk
+            fact_chunk = Chunk(
+                text="--- Known User Facts ---\n" + "\n".join(f"- {f}" for f in user_facts),
+                source="User Memory",
+                page=1,
+            )
+            chunks.append(fact_chunk)
+    metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
+
+    if not chunks:
+        yield json.dumps({"chunk": "I don't have any ingested documents to answer that question."})
+        return
+        
+    # 4. Stream LLM output
+    full_answer = ""
+    for token in generator.stream_answer(search_query, chunks):
+        full_answer += token
+        yield json.dumps({"chunk": token})
+        
+    # 4. Calculate Guardrails & Citations on the FULL answer
+    from src.services.guardrails.scorer import calculate_groundedness
+    from src.services.guardrails.citations import extract_citations
+    from src.config import get_settings
+    
+    settings = get_settings()
+    overall_confidence = calculate_groundedness(full_answer, chunks)
+    metrics.LLM_CONFIDENCE_SCORE.observe(overall_confidence)
+    citations = extract_citations(chunks)
+    
+    fallback_triggered = False
+    if overall_confidence < settings.confidence_threshold:
+        # We already streamed the text, so we can't redact it.
+        # But we flag it in metadata so the UI can warn the user.
+        fallback_triggered = True
+        logger.warning(
+            "Hallucination detected in stream",
+            extra={"confidence": overall_confidence, "threshold": settings.confidence_threshold}
+        )
+        
+    metadata = {
+        "citations": [c.to_dict() for c in citations] if citations else [],
+        "latency_ms": _elapsed(start_time) * 1000,
+        "confidence": overall_confidence,
+        "fallback_triggered": fallback_triggered,
+        "tools_used": []
+    }
+    
+    yield json.dumps({"metadata": metadata})
+    
+    # 6. Populate Semantic Cache and History
+    if not fallback_triggered:
+        result_dict = {
+            "answer": full_answer,
+            "citations": metadata["citations"],
+            "latency_ms": metadata["latency_ms"],
+            "confidence": metadata["confidence"],
+            "fallback_triggered": metadata["fallback_triggered"],
+            "tools_used": metadata["tools_used"]
+        }
+        cache.set_semantic_cache(search_query, result_dict)
+        
+    if session_id:
+        add_to_chat_history(session_id, "user", user_input)
+        add_to_chat_history(session_id, "assistant", full_answer)
+        
+    metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
