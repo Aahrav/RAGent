@@ -400,6 +400,12 @@ Do not guess or assume internal facts. Always search for them first."""
     history = get_chat_history(session_id) if session_id else []
     search_query = rewriter.condense_question(history, user_input) if history else user_input
     
+    # 0.5 Extract Long-Term Memory (Background)
+    if user_id:
+        from src.services.agent.memory import extract_and_store_facts
+        import threading
+        threading.Thread(target=extract_and_store_facts, args=(user_id, user_input)).start()
+    
     # 1. Check Semantic Cache
     from src.storage import cache
     cached_data = cache.check_semantic_cache(search_query)
@@ -537,6 +543,12 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
     
     history = get_chat_history(session_id) if session_id else []
     search_query = rewriter.condense_question(history, user_input) if history else user_input
+
+    # 1.5 Extract Long-Term Memory (Background)
+    if user_id:
+        from src.services.agent.memory import extract_and_store_facts
+        import threading
+        threading.Thread(target=extract_and_store_facts, args=(user_id, user_input)).start()
 
     # 2. Check Semantic Cache
     from src.storage import cache
