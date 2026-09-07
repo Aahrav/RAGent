@@ -63,6 +63,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional session ID for conversational memory. If omitted, a new session is created.",
     )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID for long-term personalized memory extraction.",
+    )
 
 
 class CitationResponse(BaseModel):
@@ -146,7 +150,8 @@ def chat(request: ChatRequest) -> ChatResponse:
         result = pipeline.query(
             user_input=request.query,
             use_agent=request.use_agent,
-            session_id=session_id
+            session_id=session_id,
+            user_id=request.user_id,
         )
     except Exception as exc:
         logger.error(
@@ -206,7 +211,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         try:
             for chunk_json in pipeline.stream_query(
                 user_input=request.query,
-                session_id=session_id
+                session_id=session_id,
+                user_id=request.user_id,
             ):
                 # Format as Server-Sent Event (SSE)
                 yield f"data: {chunk_json}\n\n"

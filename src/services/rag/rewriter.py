@@ -21,6 +21,7 @@ Original question: {question}
 """
 
 CONDENSE_PROMPT = """Given the following conversation history and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
+Crucially, replace any pronouns (like "he", "she", "it", "they", "this") or vague references in the follow up question with the specific names or subjects mentioned in the Chat History.
 If the follow up question does not need the history to be understood, just return the follow up question exactly as it is.
 
 Chat History:

@@ -299,7 +299,7 @@ def _elapsed(start: float) -> float:
 from langsmith import traceable
 
 @traceable(name="ragent_pipeline")
-def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None) -> QueryResult:
+def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
@@ -314,6 +314,7 @@ def query(user_input: str, use_agent: bool | None = None, session_id: str | None
         user_input: The question asked by the user.
         use_agent: Optional override for the semantic router.
         session_id: Optional session ID for conversational memory.
+        user_id: Optional user ID for long-term memory extraction.
 
     Returns:
         :class:`QueryResult` containing the answer, citations, and metadata.
@@ -498,7 +499,7 @@ Do not guess or assume internal facts. Always search for them first."""
     return result
 
 
-def stream_query(user_input: str, session_id: str | None = None) -> typing.Generator[str, None, None]:
+def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None) -> typing.Generator[str, None, None]:
     """Execute the RAG query pipeline and stream the response.
     
     Yields JSON-encoded strings. Standard chunks look like:
@@ -508,6 +509,8 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
       
     Args:
         user_input: The question asked by the user.
+        session_id: Optional session ID for conversational memory.
+        user_id: Optional user ID for long-term memory extraction.
         
     Yields:
         JSON strings for each chunk and final metadata.
