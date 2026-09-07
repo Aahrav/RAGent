@@ -392,15 +392,27 @@ Do not guess or assume internal facts. Always search for them first."""
     # =========================================================================
     logger.info("Executing Fast RAG Pipeline")
     
-    # 0. Check Semantic Cache
+    # 0. Contextualize Query with History (Short-Term Memory)
+    from src.storage.history import get_chat_history, add_to_chat_history
+    from src.services.rag import rewriter
+    
+    history = get_chat_history(session_id) if session_id else []
+    search_query = rewriter.condense_question(history, user_input) if history else user_input
+    
+    # 1. Check Semantic Cache
     from src.storage import cache
-    cached_data = cache.check_semantic_cache(user_input)
+    cached_data = cache.check_semantic_cache(search_query)
     if cached_data:
         metrics.SEMANTIC_CACHE_HITS.inc()
         metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
         from src.services.rag.models import Citation
         citations = [Citation(**c) for c in cached_data.get("citations", [])]
         
+        # Save to history before returning
+        if session_id:
+            add_to_chat_history(session_id, "user", user_input)
+            add_to_chat_history(session_id, "assistant", cached_data.get("answer", ""))
+            
         return QueryResult(
             answer=cached_data.get("answer", ""),
             citations=citations,
@@ -412,9 +424,8 @@ Do not guess or assume internal facts. Always search for them first."""
     
     metrics.SEMANTIC_CACHE_MISSES.inc()
     
-    # 1. Rewrite Query (Multi-Query Expansion)
-    from src.services.rag import rewriter
-    queries = rewriter.generate_multi_queries(user_input)
+    # 2. Rewrite Query (Multi-Query Expansion)
+    queries = rewriter.generate_multi_queries(search_query)
     
     # 2. Retrieve (Parallel + RRF)
     chunks = retriever.multi_retrieve(queries=queries)
@@ -428,9 +439,9 @@ Do not guess or assume internal facts. Always search for them first."""
             latency_ms=_elapsed(start_time) * 1000,
         )
 
-    # 2. Generate
+    # 3. Generate
     answer = generator.generate_answer(
-        query=user_input,
+        query=search_query,
         context_chunks=chunks,
     )
 
@@ -477,7 +488,11 @@ Do not guess or assume internal facts. Always search for them first."""
     
     # Populate the cache if this was a successful, confident answer
     if not fallback_triggered:
-        cache.set_semantic_cache(user_input, result.to_dict())
+        cache.set_semantic_cache(search_query, result.to_dict())
+        
+    if session_id:
+        add_to_chat_history(session_id, "user", user_input)
+        add_to_chat_history(session_id, "assistant", result.answer)
         
     metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
     return result
@@ -513,12 +528,24 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
         yield json.dumps({"error": "I'm sorry, I cannot fulfill this request because it violates safety policies."})
         return
 
-    # 1. Check Semantic Cache
+    # 1. Contextualize Query with History (Short-Term Memory)
+    from src.storage.history import get_chat_history, add_to_chat_history
+    from src.services.rag import rewriter
+    
+    history = get_chat_history(session_id) if session_id else []
+    search_query = rewriter.condense_question(history, user_input) if history else user_input
+
+    # 2. Check Semantic Cache
     from src.storage import cache
-    cached_data = cache.check_semantic_cache(user_input)
+    cached_data = cache.check_semantic_cache(search_query)
     if cached_data:
         metrics.SEMANTIC_CACHE_HITS.inc()
         metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()
+        
+        if session_id:
+            add_to_chat_history(session_id, "user", user_input)
+            add_to_chat_history(session_id, "assistant", cached_data.get("answer", ""))
+            
         # If cache hits, we can yield the full answer instantly
         yield json.dumps({"chunk": cached_data.get("answer", "")})
         
@@ -534,9 +561,8 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
         
     metrics.SEMANTIC_CACHE_MISSES.inc()
         
-    # 2. Rewrite Query & Retrieve
-    from src.services.rag import rewriter
-    queries = rewriter.generate_multi_queries(user_input)
+    # 3. Rewrite Query & Retrieve
+    queries = rewriter.generate_multi_queries(search_query)
     chunks = retriever.multi_retrieve(queries=queries)
     metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
@@ -544,9 +570,9 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
         yield json.dumps({"chunk": "I don't have any ingested documents to answer that question."})
         return
         
-    # 3. Stream LLM output
+    # 4. Stream LLM output
     full_answer = ""
-    for token in generator.stream_answer(user_input, chunks):
+    for token in generator.stream_answer(search_query, chunks):
         full_answer += token
         yield json.dumps({"chunk": token})
         
@@ -580,7 +606,7 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
     
     yield json.dumps({"metadata": metadata})
     
-    # 5. Populate Semantic Cache
+    # 6. Populate Semantic Cache and History
     if not fallback_triggered:
         result_dict = {
             "answer": full_answer,
@@ -590,6 +616,10 @@ def stream_query(user_input: str, session_id: str | None = None) -> typing.Gener
             "fallback_triggered": metadata["fallback_triggered"],
             "tools_used": metadata["tools_used"]
         }
-        cache.set_semantic_cache(user_input, result_dict)
+        cache.set_semantic_cache(search_query, result_dict)
+        
+    if session_id:
+        add_to_chat_history(session_id, "user", user_input)
+        add_to_chat_history(session_id, "assistant", full_answer)
         
     metrics.RAG_QUERIES_TOTAL.labels(status="success").inc()

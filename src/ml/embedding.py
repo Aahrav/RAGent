@@ -72,7 +72,7 @@ def _get_sparse_model() -> "SparseTextEmbedding":
         logger.info("Loading sparse embedding model", extra={"model": "Qdrant/bm25"})
         _sparse_model = SparseTextEmbedding(
             model_name="Qdrant/bm25",
-            cache_dir="/app/data/fastembed_cache"
+            cache_dir="./data/fastembed_cache"
         )
         logger.info("Sparse embedding model loaded")
 
