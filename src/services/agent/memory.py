@@ -72,3 +72,33 @@ def extract_and_store_facts(user_id: str, message: str) -> None:
         logger.warning("Failed to parse facts JSON from LLM", extra={"content": content})
     except Exception as e:
         logger.error("Error extracting user facts", extra={"error": str(e)}, exc_info=True)
+
+def retrieve_user_facts(user_id: str, query: str, top_k: int = 3) -> List[str]:
+    """Retrieve personal facts about the user relevant to the query."""
+    settings = get_settings()
+    collection = "user_memory"
+    
+    if not vector_db.collection_exists(collection):
+        return []
+        
+    try:
+        # Embed the query
+        dense_query = embed([query])[0]
+        sparse_query = embed_sparse([query])[0]
+        
+        # Search Qdrant, filtering by user_id
+        results = vector_db.search(
+            collection=collection,
+            query_vector=dense_query,
+            top_k=top_k,
+            sparse_query_vector=sparse_query,
+            filters={"user_id": user_id}
+        )
+        
+        facts = [res.get("text") for res in results if res.get("text")]
+        if facts:
+            logger.info("Retrieved user facts", extra={"user_id": user_id, "facts": facts})
+        return facts
+    except Exception as e:
+        logger.error("Error retrieving user facts", extra={"error": str(e)}, exc_info=True)
+        return []

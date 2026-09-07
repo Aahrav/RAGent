@@ -356,6 +356,14 @@ When asked complex questions involving both internal company knowledge (e.g. "Pr
 2. Second, use `web_search` to find the live public information using the facts you just learned.
 Do not guess or assume internal facts. Always search for them first."""
 
+        if user_id:
+            from src.services.agent.memory import retrieve_user_facts
+            agent_facts = retrieve_user_facts(user_id, user_input)
+            if agent_facts:
+                facts_str = "\n".join(f"- {f}" for f in agent_facts)
+                system_prompt += f"\n\nHere are some known facts about the user that you may use to personalize your response if relevant:\n{facts_str}"
+
+
         # The config object tells LangGraph which memory thread to load/save to
         config = {"configurable": {"thread_id": session_id}} if session_id else None
 
@@ -434,7 +442,13 @@ Do not guess or assume internal facts. Always search for them first."""
     # 2. Rewrite Query (Multi-Query Expansion)
     queries = rewriter.generate_multi_queries(search_query)
     
-    # 2. Retrieve (Parallel + RRF)
+    # 2.5 Retrieve User Facts
+    user_facts = []
+    if user_id:
+        from src.services.agent.memory import retrieve_user_facts
+        user_facts = retrieve_user_facts(user_id, search_query)
+
+    # 3. Retrieve (Parallel + RRF)
     chunks = retriever.multi_retrieve(queries=queries)
     metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
@@ -446,10 +460,11 @@ Do not guess or assume internal facts. Always search for them first."""
             latency_ms=_elapsed(start_time) * 1000,
         )
 
-    # 3. Generate
+    # 4. Generate
     answer = generator.generate_answer(
         query=search_query,
         context_chunks=chunks,
+        user_facts=user_facts,
     )
 
     # 3 & 4. Guardrails (Groundedness and Citations)
@@ -578,6 +593,12 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 3. Rewrite Query & Retrieve
     queries = rewriter.generate_multi_queries(search_query)
+    
+    user_facts = []
+    if user_id:
+        from src.services.agent.memory import retrieve_user_facts
+        user_facts = retrieve_user_facts(user_id, search_query)
+        
     chunks = retriever.multi_retrieve(queries=queries)
     metrics.RETRIEVAL_CHUNKS_COUNT.observe(len(chunks))
 
@@ -587,7 +608,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 4. Stream LLM output
     full_answer = ""
-    for token in generator.stream_answer(search_query, chunks):
+    for token in generator.stream_answer(search_query, chunks, user_facts):
         full_answer += token
         yield json.dumps({"chunk": token})
         
