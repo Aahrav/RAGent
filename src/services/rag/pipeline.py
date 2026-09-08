@@ -335,7 +335,7 @@ def _elapsed(start: float) -> float:
 from langsmith import traceable
 
 @traceable(name="ragent_pipeline")
-def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None) -> QueryResult:
+def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None, allowed_doc_ids: list[str] | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
@@ -479,7 +479,7 @@ Do not guess or assume internal facts. Always search for them first."""
     queries = rewriter.generate_multi_queries(search_query)
     
     # 3. Retrieve (Parallel + RRF)
-    chunks = retriever.multi_retrieve(queries=queries)
+    chunks = retriever.multi_retrieve(queries=queries, allowed_doc_ids=allowed_doc_ids)
 
     # 3.5 Retrieve User Facts
     if user_id:
@@ -562,7 +562,7 @@ Do not guess or assume internal facts. Always search for them first."""
     return result
 
 
-def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None) -> typing.Generator[str, None, None]:
+def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None, allowed_doc_ids: list[str] | None = None) -> typing.Generator[str, None, None]:
     """Execute the RAG query pipeline and stream the response.
     
     Yields JSON-encoded strings. Standard chunks look like:
@@ -574,6 +574,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         user_input: The question asked by the user.
         session_id: Optional session ID for conversational memory.
         user_id: Optional user ID for long-term memory extraction.
+        allowed_doc_ids: Optional list of document IDs allowed by RBAC.
         
     Yields:
         JSON strings for each chunk and final metadata.
@@ -635,7 +636,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 3. Rewrite Query & Retrieve
     queries = rewriter.generate_multi_queries(search_query)
-    chunks = retriever.multi_retrieve(queries=queries)
+    chunks = retriever.multi_retrieve(queries=queries, allowed_doc_ids=allowed_doc_ids)
     
     # 3.5 Retrieve User Facts
     if user_id:
