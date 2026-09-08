@@ -118,14 +118,15 @@ def _save_store(store: dict[str, DocMeta]) -> None:
 def make_doc_id(source: str) -> str:
     """Create a stable, short ID for a document from its source path.
 
-    Uses SHA-256 of the path string, taking the first 16 hex characters.
+    Uses UUID5 of the path string.
     This is deterministic — the same path always produces the same ID.
 
     Example:
         >>> make_doc_id("data/reports/Q3.pdf")
-        'a3f9c2d8e1b04715'
+        'b79148d8-795a-5e7e-8c34-eb58d4a6de14'
     """
-    return hashlib.sha256(source.encode()).hexdigest()[:16]
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, source))
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
