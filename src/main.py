@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from src.api.middleware import RequestContextMiddleware, RequestLoggingMiddleware
-from src.api.routes import chat, health, ingest
+from src.api.routes import auth, chat, health, ingest
 from src.config import get_settings
 from src.ml import embedding
 from src.utils.logger import get_logger
@@ -106,6 +106,7 @@ FastAPIInstrumentor.instrument_app(app)
 
 # Mount the API routers
 # Each router handles a specific domain (e.g. all /chat endpoints)
+app.include_router(auth.router)
 app.include_router(health.router)
 app.include_router(ingest.router)
 app.include_router(chat.router)
