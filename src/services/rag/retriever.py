@@ -33,6 +33,7 @@ def retrieve(
     top_k: int | None = None,
     score_threshold: float = 0.0,
     filters: dict[str, Any] | None = None,
+    allowed_doc_ids: list[str] | None = None,
 ) -> list[Chunk]:
     """Retrieve the most relevant document chunks for a given query.
 
@@ -41,6 +42,7 @@ def retrieve(
         top_k:           Max number of chunks to return. Defaults to config setting.
         score_threshold: Minimum cosine similarity score (0.0 to 1.0).
         filters:         Optional Qdrant metadata filters (e.g. {"source": "report.pdf"}).
+        allowed_doc_ids: Optional list of document IDs allowed by RBAC.
 
     Returns:
         List of :class:`Chunk` objects, sorted by relevance (highest score first).
@@ -49,6 +51,10 @@ def retrieve(
     settings = get_settings()
     collection = settings.qdrant_collection
     top_k = top_k or settings.retrieval_top_k
+    
+    if allowed_doc_ids is not None:
+        filters = filters or {}
+        filters["doc_id"] = allowed_doc_ids
 
     if not query.strip():
         logger.warning("Empty query provided to retriever")
@@ -152,12 +158,14 @@ def multi_retrieve(
     top_k: int | None = None,
     score_threshold: float = 0.0,
     filters: dict[str, Any] | None = None,
+    allowed_doc_ids: list[str] | None = None,
 ) -> list[Chunk]:
     """Retrieve chunks for multiple queries in parallel and fuse them with RRF.
     
     Args:
         queries: A list of search query variations.
         top_k: Max chunks to return.
+        allowed_doc_ids: Optional list of document IDs allowed by RBAC.
         
     Returns:
         A deduplicated list of top_k Chunk objects.
@@ -178,7 +186,8 @@ def multi_retrieve(
                 query=q, 
                 top_k=final_top_k, 
                 score_threshold=score_threshold, 
-                filters=filters
+                filters=filters,
+                allowed_doc_ids=allowed_doc_ids
             )
             for q in queries
         ]

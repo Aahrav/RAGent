@@ -61,11 +61,12 @@ _EMBED_BATCH_SIZE = 64
 
 # ── Ingest pipeline ────────────────────────────────────────────────────────────
 
-def ingest(sources: list[str]) -> IngestResult:
+def ingest(sources: list[str], allowed_role: str = "public") -> IngestResult:
     """Ingest documents from file paths or directories into the vector store.
 
     Steps:
       1. Load documents from disk (PDF, txt, md).
+      1.5 Save raw documents into PostgreSQL with RBAC tracking.
       2. Split documents into fixed-size chunks with overlap.
       3. Embed all chunks in batches.
       4. Ensure the Qdrant collection exists (create if needed).
@@ -75,6 +76,7 @@ def ingest(sources: list[str]) -> IngestResult:
     Args:
         sources: List of file paths or directory paths to ingest.
                  Directories are walked recursively for supported file types.
+        allowed_role: The RBAC role required to access these documents.
 
     Returns:
         :class:`IngestResult` with counts, model name, and duration.
@@ -98,7 +100,7 @@ def ingest(sources: list[str]) -> IngestResult:
     settings = get_settings()
     start_time = time.perf_counter()
 
-    logger.info("Ingest started", extra={"sources": sources})
+    logger.info("Ingest started", extra={"sources": sources, "allowed_role": allowed_role})
 
     # ── Step 1: Load documents from disk ──────────────────────────────────────
     logger.info("Step 1/5 — Loading documents from disk")
@@ -117,9 +119,43 @@ def ingest(sources: list[str]) -> IngestResult:
             duration_sec=_elapsed(start_time),
             sources=sources,
         )
+        
+    logger.info("Step 1.5/5 — Saving raw documents to PostgreSQL")
+    from src.storage.db.database import SessionLocal
+    from src.storage.db.models import Document as DBDocument, DocumentAccess
+    from src.storage.document_store import make_doc_id
+    
+    source_texts = {}
+    for doc in docs:
+        if doc.source not in source_texts:
+            source_texts[doc.source] = []
+        source_texts[doc.source].append(doc.text)
+        
+    with SessionLocal() as db:
+        for source_path, texts in source_texts.items():
+            full_text = "\n\n".join(texts)
+            doc_id = make_doc_id(source_path)
+            
+            # Check if exists
+            db_doc = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
+            if not db_doc:
+                db_doc = DBDocument(id=doc_id, filename=Path(source_path).name, raw_text=full_text)
+                db.add(db_doc)
+            else:
+                db_doc.raw_text = full_text
+                db_doc.version += 1
+                
+            db.commit()
+            
+            # Ensure DocumentAccess
+            db_access = db.query(DocumentAccess).filter(DocumentAccess.document_id == doc_id, DocumentAccess.allowed_role == allowed_role).first()
+            if not db_access:
+                db_access = DocumentAccess(document_id=doc_id, allowed_role=allowed_role)
+                db.add(db_access)
+            db.commit()
 
     logger.info(
-        "Documents loaded",
+        "Documents loaded and saved to Postgres",
         extra={"count": len(docs), "sources": len(sources)},
     )
 
@@ -299,7 +335,7 @@ def _elapsed(start: float) -> float:
 from langsmith import traceable
 
 @traceable(name="ragent_pipeline")
-def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None) -> QueryResult:
+def query(user_input: str, use_agent: bool | None = None, session_id: str | None = None, user_id: str | None = None, allowed_doc_ids: list[str] | None = None) -> QueryResult:
     """Execute the full RAG query pipeline with Guardrails and Agent Routing.
 
     Steps:
@@ -443,7 +479,7 @@ Do not guess or assume internal facts. Always search for them first."""
     queries = rewriter.generate_multi_queries(search_query)
     
     # 3. Retrieve (Parallel + RRF)
-    chunks = retriever.multi_retrieve(queries=queries)
+    chunks = retriever.multi_retrieve(queries=queries, allowed_doc_ids=allowed_doc_ids)
 
     # 3.5 Retrieve User Facts
     if user_id:
@@ -526,7 +562,7 @@ Do not guess or assume internal facts. Always search for them first."""
     return result
 
 
-def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None) -> typing.Generator[str, None, None]:
+def stream_query(user_input: str, session_id: str | None = None, user_id: str | None = None, allowed_doc_ids: list[str] | None = None) -> typing.Generator[str, None, None]:
     """Execute the RAG query pipeline and stream the response.
     
     Yields JSON-encoded strings. Standard chunks look like:
@@ -538,6 +574,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         user_input: The question asked by the user.
         session_id: Optional session ID for conversational memory.
         user_id: Optional user ID for long-term memory extraction.
+        allowed_doc_ids: Optional list of document IDs allowed by RBAC.
         
     Yields:
         JSON strings for each chunk and final metadata.
@@ -599,7 +636,7 @@ def stream_query(user_input: str, session_id: str | None = None, user_id: str | 
         
     # 3. Rewrite Query & Retrieve
     queries = rewriter.generate_multi_queries(search_query)
-    chunks = retriever.multi_retrieve(queries=queries)
+    chunks = retriever.multi_retrieve(queries=queries, allowed_doc_ids=allowed_doc_ids)
     
     # 3.5 Retrieve User Facts
     if user_id:

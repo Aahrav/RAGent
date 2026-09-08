@@ -177,13 +177,16 @@ def search(
 
     qdrant_filter = None
     if filters:
-        conditions = [
-            qmodels.FieldCondition(
-                key=k,
-                match=qmodels.MatchValue(value=v),
-            )
-            for k, v in filters.items()
-        ]
+        conditions = []
+        for k, v in filters.items():
+            if isinstance(v, list):
+                conditions.append(
+                    qmodels.FieldCondition(key=k, match=qmodels.MatchAny(any=v))
+                )
+            else:
+                conditions.append(
+                    qmodels.FieldCondition(key=k, match=qmodels.MatchValue(value=v))
+                )
         qdrant_filter = qmodels.Filter(must=conditions)
 
     if sparse_query_vector:
