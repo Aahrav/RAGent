@@ -36,26 +36,35 @@ def call_model(state: AgentState) -> dict:
     response = model_with_tools.invoke(state["messages"])
     
     # --- HOTFIX FOR LOCAL OLLAMA JSON TOOL CALLING ---
-    # Llama3 often returns the tool call as raw JSON in the content string
+    # Open-source models often return the tool call as raw JSON inside a conversational preamble
     # instead of populating the native LangChain `tool_calls` attribute.
     if isinstance(response, AIMessage) and not getattr(response, "tool_calls", None) and response.content:
         content_str = str(response.content).strip()
-        # Sometimes the LLM wraps it in a markdown block
-        if content_str.startswith("```json"):
-            content_str = content_str[7:].strip()
-        if content_str.endswith("```"):
-            content_str = content_str[:-3].strip()
-            
-        if content_str.startswith("{") and content_str.endswith("}"):
+        
+        # Look for a JSON object containing "name" and "arguments"
+        import re
+        # Find the last JSON block that looks like a tool call
+        match = re.search(r'(\{[\s\S]*?"name"[\s\S]*?"arguments"[\s\S]*?\})', content_str)
+        if match:
             try:
-                parsed = json.loads(content_str)
+                parsed = json.loads(match.group(1))
                 if "name" in parsed and "arguments" in parsed:
                     logger.info("Intercepted raw JSON tool call from Ollama", extra={"tool": parsed["name"]})
+                    
+                    # Convert arguments string to dict if the model double-encoded it
+                    args = parsed["arguments"]
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {"query": args} # Fallback
+                            
                     response.tool_calls = [{
                         "name": parsed["name"],
-                        "args": parsed["arguments"],
+                        "args": args,
                         "id": f"call_{uuid.uuid4().hex[:8]}"
                     }]
+                    # Clear content so it doesn't get rendered to user, or keep preamble
                     response.content = ""
             except json.JSONDecodeError:
                 pass

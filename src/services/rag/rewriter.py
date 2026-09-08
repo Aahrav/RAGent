@@ -20,6 +20,45 @@ Do not include numbering, bullet points, or introductory text. Just output the 3
 Original question: {question}
 """
 
+CONDENSE_PROMPT = """Given the following conversation history and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
+Crucially, replace any pronouns (like "he", "she", "it", "they", "this") or vague references in the follow up question with the specific names or subjects mentioned in the Chat History.
+If the follow up question does not need the history to be understood, just return the follow up question exactly as it is.
+
+Chat History:
+{chat_history}
+
+Follow Up Input: {question}
+Standalone question:"""
+
+def condense_question(history: list[dict[str, str]], question: str) -> str:
+    """Rewrite a follow-up question into a standalone question using chat history.
+    
+    Args:
+        history: List of dictionaries with 'role' and 'content'.
+        question: The latest user query.
+        
+    Returns:
+        A standalone version of the question, or the original if history is empty.
+    """
+    if not history:
+        return question
+        
+    llm = get_llm()
+    prompt = PromptTemplate(template=CONDENSE_PROMPT, input_variables=["chat_history", "question"])
+    chain = prompt | llm
+    
+    # Format history into a readable string
+    formatted_history = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
+    
+    try:
+        response = chain.invoke({"chat_history": formatted_history, "question": question})
+        condensed = response.content.strip() if hasattr(response, "content") else str(response).strip()
+        logger.info("Condensed query using history", extra={"original": question, "condensed": condensed})
+        return condensed
+    except Exception as e:
+        logger.error("Failed to condense query", extra={"error": str(e)}, exc_info=True)
+        return question
+
 def generate_multi_queries(question: str) -> list[str]:
     """Generate multiple variations of a search query using the LLM.
     

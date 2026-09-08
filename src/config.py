@@ -79,6 +79,12 @@ class Settings(BaseSettings):
         description="Redis connection URL.",
     )
 
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    postgres_url: str = Field(
+        default="postgresql://trace_user:trace_pass@localhost:5432/trace_db",
+        description="PostgreSQL connection URL.",
+    )
+
     # ── Embeddings ────────────────────────────────────────────────────────────
     embedding_model: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
@@ -104,8 +110,16 @@ class Settings(BaseSettings):
         description="Deployment environment (development, staging, production).",
     )
     app_secret_key: str = Field(
-        default="changeme-replace-in-production",
+        default="5dd1c22c6ddc9882cace57af5ebccc92099f31f13fb916c4d8d6cff4346f6f29",
         description="Secret key for signing tokens.",
+    )
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="JWT signing algorithm.",
+    )
+    access_token_expire_minutes: int = Field(
+        default=60 * 24 * 7, # 1 week
+        description="Access token expiration in minutes.",
     )
     api_keys: str = Field(
         default="",

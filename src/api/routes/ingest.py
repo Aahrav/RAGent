@@ -57,6 +57,10 @@ class IngestRequest(BaseModel):
         description="File or directory paths to ingest. At least one required.",
         examples=[["data/reports/Q3_Report.pdf", "data/notes/"]],
     )
+    allowed_role: str = Field(
+        default="public",
+        description="The RBAC role required to access this document.",
+    )
 
     @field_validator("sources")
     @classmethod
@@ -138,7 +142,7 @@ def ingest_documents(request: IngestRequest) -> IngestResponse:
     )
 
     try:
-        result = pipeline.ingest(sources=request.sources)
+        result = pipeline.ingest(sources=request.sources, allowed_role=request.allowed_role)
     except ValueError as exc:
         # Raised by pipeline when sources list is empty or paths don't exist
         logger.warning("Ingest rejected — bad input", extra={"error": str(exc)})

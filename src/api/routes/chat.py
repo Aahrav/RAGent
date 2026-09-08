@@ -9,13 +9,17 @@ Flow:
 
 from __future__ import annotations
 
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.auth import rate_limit_dependency
+from src.api.auth import get_current_user, rate_limit_dependency
 from src.services.rag import pipeline
 from src.utils.logger import get_logger
+from sqlalchemy.orm import Session
+from src.storage.db.database import get_db
+from src.storage.db.models import User, DocumentAccess
 
 logger = get_logger(__name__)
 
@@ -57,6 +61,14 @@ class ChatRequest(BaseModel):
     use_agent: bool | None = Field(
         default=None,
         description="Override the automatic router. True forces the Agent, False forces standard RAG.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session ID for conversational memory. If omitted, a new session is created.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID for long-term personalized memory extraction.",
     )
 
 
@@ -121,11 +133,17 @@ class ChatResponse(BaseModel):
         "exactly where the information came from."
     ),
 )
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ChatResponse:
     """POST /chat — execute a RAG query.
 
     Args:
         request: JSON body containing the user's query string.
+        current_user: The authenticated user.
+        db: PostgreSQL session.
 
     Returns:
         The generated answer, latency, and a list of citations.
@@ -134,12 +152,20 @@ def chat(request: ChatRequest) -> ChatResponse:
         422: If the request body is invalid (handled automatically by FastAPI).
         500: If the retrieval or generation pipeline fails unexpectedly.
     """
-    logger.info("Chat request received", extra={"query": request.query})
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat request received", extra={"query": request.query, "session_id": session_id})
+    
+    # Fetch RBAC allowed document IDs
+    allowed_access = db.query(DocumentAccess).filter(DocumentAccess.allowed_role == current_user.role).all()
+    allowed_doc_ids = [str(access.document_id) for access in allowed_access]
 
     try:
         result = pipeline.query(
             user_input=request.query,
-            use_agent=request.use_agent
+            use_agent=request.use_agent,
+            session_id=session_id,
+            user_id=request.user_id,
+            allowed_doc_ids=allowed_doc_ids,
         )
     except Exception as exc:
         logger.error(
@@ -183,20 +209,36 @@ def chat(request: ChatRequest) -> ChatResponse:
         "contains {'metadata': {...}}."
     ),
 )
-def chat_stream(request: ChatRequest) -> StreamingResponse:
+def chat_stream(
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
     """POST /chat/stream — execute a streaming RAG query.
 
     Args:
         request: JSON body containing the user's query string.
+        current_user: The authenticated user.
+        db: PostgreSQL session.
 
     Returns:
         A StreamingResponse that yields SSE data packets.
     """
-    logger.info("Chat stream request received", extra={"query": request.query})
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.info("Chat stream request received", extra={"query": request.query, "session_id": session_id})
+    
+    # Fetch RBAC allowed document IDs
+    allowed_access = db.query(DocumentAccess).filter(DocumentAccess.allowed_role == current_user.role).all()
+    allowed_doc_ids = [str(access.document_id) for access in allowed_access]
 
     def event_generator():
         try:
-            for chunk_json in pipeline.stream_query(user_input=request.query):
+            for chunk_json in pipeline.stream_query(
+                user_input=request.query,
+                session_id=session_id,
+                user_id=request.user_id,
+                allowed_doc_ids=allowed_doc_ids,
+            ):
                 # Format as Server-Sent Event (SSE)
                 yield f"data: {chunk_json}\n\n"
         except Exception as exc:

@@ -3,83 +3,94 @@
 Provides a FastAPI dependency to secure endpoints.
 """
 
-from fastapi import Depends, HTTPException, Request, Security, status
-from fastapi.security import APIKeyHeader
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
+from sqlalchemy.orm import Session
 
 from src.config import get_settings
+from src.storage.db.database import get_db
+from src.storage.db.models import User
 
-# Extract the API key from the "X-API-Key" HTTP header.
-# auto_error=False allows us to handle the missing key logic ourselves.
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+settings = get_settings()
 
+import bcrypt
+from fastapi.security import OAuth2PasswordBearer
 
-def verify_api_key(api_key_header_value: str = Security(api_key_header)) -> str | None:
-    """Validate the incoming API key against configured valid keys.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+def get_password_hash(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    from datetime import timezone
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     
-    If the server has no API keys configured in the environment (.env), 
-    authentication is temporarily bypassed. This makes local development easier.
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.app_secret_key, algorithm=settings.jwt_algorithm)
+    return encoded_jwt
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Optional[User]:
+    """Validate JWT and retrieve User from DB.
     
-    Args:
-        api_key_header_value: The value of the X-API-Key header extracted by FastAPI.
-        
-    Returns:
-        The valid API key if successful, or None if auth is bypassed.
-        
-    Raises:
-        HTTPException: 403 Forbidden if the API key is missing or invalid.
+    Bypass auth if token is None and no API keys/Auth are required locally, 
+    but for Enterprise RBAC we enforce token presence.
     """
-    settings = get_settings()
-    valid_keys = settings.get_api_keys_list()
+    if not token:
+        # We can bypass auth for completely open local dev if desired, 
+        # but Enterprise RBAC demands authentication.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     
-    # 1. Bypassed Auth: If no keys are configured, skip authentication entirely.
-    if not valid_keys:
-        return None
+    try:
+        payload = jwt.decode(token, settings.app_secret_key, algorithms=[settings.jwt_algorithm])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
         
-    # 2. Missing Key
-    if not api_key_header_value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Authentication required: Missing X-API-Key header"
-        )
-        
-    # 3. Invalid Key
-    if api_key_header_value not in valid_keys:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Authentication failed: Invalid API Key"
-        )
-        
-    return api_key_header_value
-
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 def rate_limit_dependency(
     request: Request,
-    api_key: str | None = Depends(verify_api_key),
+    current_user: Optional[User] = Depends(get_current_user),
 ) -> None:
-    """Enforce the sliding window rate limit for the API.
-    
-    This dependency should be added to routers or endpoints to protect them.
-    It automatically invokes verify_api_key first to authenticate the user.
-    
-    Args:
-        request: The FastAPI request object.
-        api_key: The authenticated API key (if auth is enabled).
-        
-    Raises:
-        HTTPException: 429 Too Many Requests if the limit is exceeded.
-    """
+    """Enforce the sliding window rate limit for the API."""
     from src.storage.cache import check_rate_limit
     
-    # Use the API key if provided, otherwise fallback to the client's IP address
-    # If the client is behind a proxy, we try to use the x-forwarded-for header
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-    else:
-        client_ip = request.client.host if request.client else "unknown"
-        
-    client_id = api_key if api_key else client_ip
+    client_id = current_user.username if current_user else None
     
+    if not client_id:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_id = forwarded_for.split(",")[0].strip()
+        else:
+            client_id = request.client.host if request.client else "unknown"
+        
     # ── Context Observability: Set the User ID for Logs/Traces ──
     from src.utils.request_context import set_user_id
     set_user_id(client_id)
