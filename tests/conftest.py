@@ -3,7 +3,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import uuid
+import os
 from typing import Generator
+
+# Disable OpenTelemetry during tests to prevent connection errors
+os.environ["OTEL_SDK_DISABLED"] = "true"
 
 from src.main import app
 from src.storage.db.database import get_db, Base

@@ -1,4 +1,7 @@
-def test_ingestion_with_admin_user(client, mocker):
+from unittest.mock import patch
+
+@patch("src.api.routes.ingest.pipeline.ingest")
+def test_ingestion_with_admin_user(mock_ingest, client):
     """Test that ingestion works when authenticated and properly passes allowed_role to the pipeline."""
     # 1. Get token
     auth_response = client.post(
@@ -8,7 +11,6 @@ def test_ingestion_with_admin_user(client, mocker):
     token = auth_response.json()["access_token"]
     
     # 2. Mock pipeline.ingest
-    mock_ingest = mocker.patch("src.api.routes.ingest.pipeline.ingest")
     from src.services.rag.models import IngestResult
     mock_ingest.return_value = IngestResult(
         ingested_documents=1,
@@ -33,7 +35,8 @@ def test_ingestion_with_admin_user(client, mocker):
     # 4. Verify the pipeline was called with the correct allowed_role
     mock_ingest.assert_called_once_with(sources=["dummy.pdf"], allowed_role="admin")
 
-def test_ingestion_with_public_role_default(client, mocker):
+@patch("src.api.routes.ingest.pipeline.ingest")
+def test_ingestion_with_public_role_default(mock_ingest, client):
     """Test that ingestion defaults to public role if not specified."""
     auth_response = client.post(
         "/auth/token",
@@ -41,7 +44,6 @@ def test_ingestion_with_public_role_default(client, mocker):
     )
     token = auth_response.json()["access_token"]
     
-    mock_ingest = mocker.patch("src.api.routes.ingest.pipeline.ingest")
     from src.services.rag.models import IngestResult
     mock_ingest.return_value = IngestResult(
         ingested_documents=1,

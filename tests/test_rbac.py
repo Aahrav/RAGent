@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 def test_authentication_success(client):
     """Test that valid credentials return a JWT token."""
     response = client.post(
@@ -27,7 +29,8 @@ def test_chat_requires_authentication(client):
     assert response.status_code == 401
     assert response.json()["detail"] == "Not authenticated"
 
-def test_chat_with_public_user(client, db_session, mocker):
+@patch("src.api.routes.chat.pipeline.query")
+def test_chat_with_public_user(mock_query, client, db_session):
     """Test that a public user can access the chat endpoint, but the pipeline is only given public documents."""
     # 1. Get token
     auth_response = client.post(
@@ -38,7 +41,6 @@ def test_chat_with_public_user(client, db_session, mocker):
     
     # 2. Mock the pipeline.query to avoid needing a live Qdrant instance for this unit test
     # but still verify that RBAC logic in the route passes the correct allowed_doc_ids.
-    mock_query = mocker.patch("src.api.routes.chat.pipeline.query")
     from src.services.rag.models import QueryResult
     mock_query.return_value = QueryResult(
         answer="Mocked answer",
@@ -69,7 +71,8 @@ def test_chat_with_public_user(client, db_session, mocker):
     kwargs = mock_query.call_args.kwargs
     assert str(doc_id) in kwargs["allowed_doc_ids"]
 
-def test_chat_with_admin_user(client, db_session, mocker):
+@patch("src.api.routes.chat.pipeline.query")
+def test_chat_with_admin_user(mock_query, client, db_session):
     """Test that an admin user can access the chat endpoint and gets admin document IDs."""
     auth_response = client.post(
         "/auth/token",
@@ -77,7 +80,6 @@ def test_chat_with_admin_user(client, db_session, mocker):
     )
     token = auth_response.json()["access_token"]
     
-    mock_query = mocker.patch("src.api.routes.chat.pipeline.query")
     from src.services.rag.models import QueryResult
     mock_query.return_value = QueryResult(
         answer="Mocked answer",

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Table
 from sqlalchemy.orm import relationship
@@ -22,7 +22,7 @@ class Document(Base):
     filename = Column(String, nullable=False)
     raw_text = Column(Text, nullable=False)
     version = Column(Integer, default=1)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class DocumentAccess(Base):
     __tablename__ = "document_access"

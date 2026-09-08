@@ -110,7 +110,7 @@ class Settings(BaseSettings):
         description="Deployment environment (development, staging, production).",
     )
     app_secret_key: str = Field(
-        default="changeme-replace-in-production",
+        default="5dd1c22c6ddc9882cace57af5ebccc92099f31f13fb916c4d8d6cff4346f6f29",
         description="Secret key for signing tokens.",
     )
     jwt_algorithm: str = Field(
