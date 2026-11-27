@@ -27,14 +27,40 @@ logger = get_logger(__name__)
 
 
 class FactTriple(BaseModel):
-    """A Subject-Predicate-Object factual claim anchored to a scene."""
+    """A Subject-Predicate-Object factual claim anchored to a scene/segment."""
 
     subject: str = Field(..., min_length=1)
     predicate: str = Field(..., min_length=1)
     object: str = Field(..., min_length=1)
     scene_id: str = Field(..., min_length=1)
+    source_segment: str | None = Field(default=None)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     source: Literal["system1_deterministic", "laya", "llm"] = "system1_deterministic"
+    evidence: str | None = Field(default=None)
+
+
+# Alias matching Issue #55 specification
+ExtractedFact = FactTriple
+
+
+class NarrativeEvent(BaseModel):
+    """A discrete narrative event anchored to characters, location, and order."""
+
+    description: str = Field(..., min_length=1)
+    characters: list[str] = Field(default_factory=list)
+    location: str | None = Field(default=None)
+    temporal_order: int | str | None = Field(default=None)
+    source_segment: str | None = Field(default=None)
+    scene_id: str | None = Field(default=None)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class WorldRule(BaseModel):
+    """An established rule or axiom of the narrative world (magic, tech, law)."""
+
+    rule: str = Field(..., min_length=1)
+    established_in: str = Field(..., min_length=1)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: str | None = Field(default=None)
 
 
@@ -87,11 +113,13 @@ class LayaSegmentTriage(BaseModel):
 
 
 class SegmentExtraction(BaseModel):
-    """All extracted facts, knowledge assertions, and temporal markers for one segment."""
+    """All extracted facts, events, world rules, knowledge assertions, and temporal markers for one segment."""
 
     segment_id: str = Field(..., min_length=1)
     scene_id: str = Field(..., min_length=1)
     triples: list[FactTriple] = Field(default_factory=list)
+    events: list[NarrativeEvent] = Field(default_factory=list)
+    world_rules: list[WorldRule] = Field(default_factory=list)
     knowledge_assertions: list[KnowledgeAssertion] = Field(default_factory=list)
     temporal_markers: list[TemporalMarker] = Field(default_factory=list)
     triage: LayaSegmentTriage | None = Field(default=None)
@@ -107,6 +135,14 @@ class DocumentExtraction(BaseModel):
     @property
     def all_triples(self) -> list[FactTriple]:
         return [t for seg in self.segments for t in seg.triples]
+
+    @property
+    def all_events(self) -> list[NarrativeEvent]:
+        return [e for seg in self.segments for e in seg.events]
+
+    @property
+    def all_world_rules(self) -> list[WorldRule]:
+        return [r for seg in self.segments for r in seg.world_rules]
 
     @property
     def all_knowledge_assertions(self) -> list[KnowledgeAssertion]:
@@ -127,6 +163,18 @@ class _LlmTriple(BaseModel):
     evidence: str | None = None
 
 
+class _LlmEvent(BaseModel):
+    description: str = Field(..., min_length=1)
+    characters: list[str] = Field(default_factory=list)
+    location: str | None = None
+    temporal_order: str | None = None
+
+
+class _LlmWorldRule(BaseModel):
+    rule: str = Field(..., min_length=1)
+    evidence: str | None = None
+
+
 class _LlmKnowledge(BaseModel):
     character: str = Field(..., min_length=1)
     fact: str = Field(..., min_length=1)
@@ -143,6 +191,8 @@ class _LlmTemporal(BaseModel):
 
 class _LlmSegmentPayload(BaseModel):
     triples: list[_LlmTriple] = Field(default_factory=list)
+    events: list[_LlmEvent] = Field(default_factory=list)
+    world_rules: list[_LlmWorldRule] = Field(default_factory=list)
     knowledge_assertions: list[_LlmKnowledge] = Field(default_factory=list)
     temporal_markers: list[_LlmTemporal] = Field(default_factory=list)
 
@@ -286,6 +336,10 @@ class NarrativeExtractor:
     ) -> SegmentExtraction:
         """Extract facts, knowledge assertions, and temporal markers for one segment."""
         triples, markers = _extract_deterministic_system1(segment, prev_scene_id)
+        for t in triples:
+            t.source_segment = segment.segment_id
+        events: list[NarrativeEvent] = []
+        world_rules: list[WorldRule] = []
         knowledge: list[KnowledgeAssertion] = []
         triage: LayaSegmentTriage | None = None
         used_system2 = False
@@ -322,9 +376,31 @@ class NarrativeExtractor:
                             predicate=t.predicate,
                             object=t.object,
                             scene_id=segment.scene_id,
+                            source_segment=segment.segment_id,
                             confidence=0.95,
                             source="llm",
                             evidence=t.evidence,
+                        )
+                    )
+                for ev in llm_payload.events:
+                    events.append(
+                        NarrativeEvent(
+                            description=ev.description,
+                            characters=ev.characters or list(segment.characters_present),
+                            location=ev.location or segment.location,
+                            temporal_order=ev.temporal_order or segment.segment_index,
+                            source_segment=segment.segment_id,
+                            scene_id=segment.scene_id,
+                            confidence=0.95,
+                        )
+                    )
+                for wr in llm_payload.world_rules:
+                    world_rules.append(
+                        WorldRule(
+                            rule=wr.rule,
+                            established_in=segment.segment_id,
+                            confidence=0.9,
+                            evidence=wr.evidence,
                         )
                     )
                 for k in llm_payload.knowledge_assertions:
@@ -350,11 +426,28 @@ class NarrativeExtractor:
                         )
                     )
 
+        if not events:
+            events.append(
+                NarrativeEvent(
+                    description=segment.heading or segment.text[:160],
+                    characters=list(segment.characters_present),
+                    location=segment.location,
+                    temporal_order=(
+                        triage.temporal_order if triage is not None else segment.segment_index
+                    ),
+                    source_segment=segment.segment_id,
+                    scene_id=segment.scene_id,
+                    confidence=0.85,
+                )
+            )
+
         deduped_triples = self._dedupe_triples(triples)
         return SegmentExtraction(
             segment_id=segment.segment_id,
             scene_id=segment.scene_id,
             triples=deduped_triples,
+            events=events,
+            world_rules=world_rules,
             knowledge_assertions=knowledge,
             temporal_markers=markers,
             triage=triage,
@@ -438,8 +531,10 @@ class NarrativeExtractor:
             system_prompt = (
                 "You are a narrative continuity analyst. Extract only explicitly supported:\n"
                 "1. Subject-Predicate-Object fact triples (injuries, possessions, deaths, locations, relationships).\n"
-                "2. Character knowledge assertions (who learns, knows, or is explicitly kept unaware of a fact).\n"
-                "3. Temporal ordering markers (before, after, simultaneous_with) relative to other events."
+                "2. Narrative events (description, characters involved, location, temporal_order).\n"
+                "3. World rules (explicit laws, magic/tech constraints, or organization rules established).\n"
+                "4. Character knowledge assertions (who learns, knows, or is explicitly kept unaware of a fact).\n"
+                "5. Temporal ordering markers (before, after, simultaneous_with) relative to other events."
             )
             human_prompt = (
                 f"Scene ID: {segment.scene_id}\n"
@@ -465,3 +560,118 @@ class NarrativeExtractor:
                 seen.add(key)
                 unique.append(t)
         return unique
+
+
+# ── PostgreSQL Persistence ─────────────────────────────────────────────────────
+
+
+def save_extraction(
+    document_id: Any,
+    extraction: DocumentExtraction,
+    db: Any | None = None,
+    replace_existing: bool = True,
+) -> dict[str, int]:
+    """Persist extracted facts, events, world rules, and knowledge assertions to SQL/PostgreSQL."""
+    import uuid as _uuid
+
+    from src.storage.db.database import SessionLocal
+    from src.storage.db.models import (
+        NarrativeEventRecord,
+        NarrativeFact,
+        NarrativeKnowledgeRecord,
+        WorldRuleRecord,
+    )
+
+    doc_uuid = (
+        document_id if isinstance(document_id, _uuid.UUID) else _uuid.UUID(str(document_id))
+    )
+    owns_session = db is None
+    session = db if db is not None else SessionLocal()
+
+    try:
+        if replace_existing:
+            for model in (
+                NarrativeFact,
+                NarrativeEventRecord,
+                WorldRuleRecord,
+                NarrativeKnowledgeRecord,
+            ):
+                session.query(model).filter(model.document_id == doc_uuid).delete(
+                    synchronize_session=False
+                )
+
+        facts = [
+            NarrativeFact(
+                document_id=doc_uuid,
+                subject=t.subject,
+                predicate=t.predicate,
+                object=t.object,
+                confidence=t.confidence,
+                source_segment=t.source_segment,
+                scene_id=t.scene_id,
+                source=t.source,
+                evidence=t.evidence,
+            )
+            for t in extraction.all_triples
+        ]
+        events = [
+            NarrativeEventRecord(
+                document_id=doc_uuid,
+                description=e.description,
+                characters=list(e.characters),
+                location=e.location,
+                temporal_order=(
+                    str(e.temporal_order) if e.temporal_order is not None else None
+                ),
+                source_segment=e.source_segment,
+                scene_id=e.scene_id,
+                confidence=e.confidence,
+            )
+            for e in extraction.all_events
+        ]
+        rules = [
+            WorldRuleRecord(
+                document_id=doc_uuid,
+                rule=r.rule,
+                established_in=r.established_in,
+                confidence=r.confidence,
+                evidence=r.evidence,
+            )
+            for r in extraction.all_world_rules
+        ]
+        knowledge = [
+            NarrativeKnowledgeRecord(
+                document_id=doc_uuid,
+                character=k.character,
+                fact=k.fact,
+                knows=k.knows,
+                source_segment=next(
+                    (s.segment_id for s in extraction.segments if k in s.knowledge_assertions),
+                    None,
+                ),
+                scene_id=k.scene_id,
+                confidence=k.confidence,
+            )
+            for k in extraction.all_knowledge_assertions
+        ]
+
+        session.add_all(facts + events + rules + knowledge)
+        session.commit()
+
+        counts = {
+            "facts": len(facts),
+            "events": len(events),
+            "world_rules": len(rules),
+            "knowledge": len(knowledge),
+        }
+        logger.info(
+            "Saved narrative extraction to database",
+            extra={"document_id": str(doc_uuid), **counts},
+        )
+        return counts
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        if owns_session:
+            session.close()

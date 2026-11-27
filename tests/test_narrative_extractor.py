@@ -8,13 +8,23 @@ from unittest.mock import MagicMock, patch
 from src.narrative.extractor import (
     LayaSegmentTriage,
     NarrativeExtractor,
+    _LlmEvent,
     _LlmKnowledge,
     _LlmSegmentPayload,
     _LlmTemporal,
     _LlmTriple,
+    _LlmWorldRule,
+    save_extraction,
 )
 from src.narrative.parsers import FountainParser
 from src.narrative.segmenter import NarrativeSegment
+from src.storage.db.models import (
+    Document,
+    NarrativeEventRecord,
+    NarrativeFact,
+    NarrativeKnowledgeRecord,
+    WorldRuleRecord,
+)
 
 
 class _FakeLayaRunner:
@@ -108,6 +118,20 @@ def test_laya_hybrid_escalates_to_system2_on_epistemic_or_state_signal(
                 evidence="Bruce limps with a broken leg.",
             )
         ],
+        events=[
+            _LlmEvent(
+                description="Bruce warns the team not to inform Michael about the ambush.",
+                characters=["BRUCE", "MICHAEL"],
+                location="SAFEHOUSE",
+                temporal_order="1",
+            )
+        ],
+        world_rules=[
+            _LlmWorldRule(
+                rule="No family member may enter the safehouse armed.",
+                evidence="Leave your guns at the door.",
+            )
+        ],
         knowledge_assertions=[
             _LlmKnowledge(
                 character="MICHAEL",
@@ -144,8 +168,54 @@ Don't tell Michael about the ambush yet.
     assert result.segments[0].used_system2 is True
     assert any(
         t.subject == "BRUCE" and t.predicate == "has_injury" and t.source == "llm"
+        and t.source_segment == "scene_0001_seg_0"
         for t in result.all_triples
     )
+    assert len(result.all_events) == 1
+    assert result.all_events[0].location == "SAFEHOUSE"
+    assert len(result.all_world_rules) == 1
+    assert result.all_world_rules[0].established_in == "scene_0001_seg_0"
     assert len(result.all_knowledge_assertions) == 1
     assert result.all_knowledge_assertions[0].knows is False
     assert any(m.relation == "before" for m in result.all_temporal_markers)
+
+
+@patch("src.narrative.extractor.get_llm")
+def test_save_extraction_persists_to_database(mock_get_llm: MagicMock, db_session) -> None:
+    import uuid
+
+    fake_laya = _FakeLayaRunner(
+        {
+            "has_physical_state_change": {"noul": 0.90, "confidence": 0.90},
+            "has_epistemic_event": {"noul": 0.85, "confidence": 0.85},
+            "temporal_order": {"choice": "chronological", "confidence": 0.92},
+            "continuity_salience": {"score": 4.0, "confidence": 0.90},
+        }
+    )
+    mock_structured = MagicMock()
+    mock_structured.invoke.return_value = _LlmSegmentPayload(
+        triples=[_LlmTriple(subject="ALICE", predicate="holds", object="key")],
+        events=[_LlmEvent(description="Alice unlocks the vault.", characters=["ALICE"], location="VAULT")],
+        world_rules=[_LlmWorldRule(rule="Only the keyholder may open the vault.")],
+        knowledge_assertions=[_LlmKnowledge(character="BOB", fact="vault_is_open", knows=False)],
+    )
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output.return_value = mock_structured
+    mock_get_llm.return_value = mock_llm
+
+    doc_id = uuid.uuid4()
+    db_session.add(Document(id=doc_id, filename="vault.fountain", raw_text="INT. VAULT - NIGHT"))
+    db_session.commit()
+
+    doc = FountainParser().parse_text("INT. VAULT - NIGHT\n\nALICE\nI have the key.\n")
+    extraction = NarrativeExtractor(mode="hybrid", laya_agent=fake_laya).extract_document(doc)
+    counts = save_extraction(doc_id, extraction, db=db_session)
+
+    assert counts["facts"] >= 1
+    assert counts["events"] == 1
+    assert counts["world_rules"] == 1
+    assert counts["knowledge"] == 1
+    assert db_session.query(NarrativeFact).filter_by(document_id=doc_id).count() == counts["facts"]
+    assert db_session.query(NarrativeEventRecord).filter_by(document_id=doc_id).count() == 1
+    assert db_session.query(WorldRuleRecord).filter_by(document_id=doc_id).count() == 1
+    assert db_session.query(NarrativeKnowledgeRecord).filter_by(document_id=doc_id).count() == 1

@@ -2,13 +2,17 @@
 
 from src.narrative.extractor import (
     DocumentExtraction,
+    ExtractedFact,
     FactTriple,
     KnowledgeAssertion,
     LayaSegmentTriage,
+    NarrativeEvent,
     NarrativeExtractor,
     SegmentExtraction,
     TemporalMarker,
+    WorldRule,
     get_laya_agent,
+    save_extraction,
 )
 from src.narrative.parsers import (
     Action,
@@ -36,12 +40,14 @@ __all__ = [
     "CharacterDialogue",
     "DocumentExtraction",
     "EpubParser",
+    "ExtractedFact",
     "FactTriple",
     "FdxParser",
     "FountainParser",
     "KnowledgeAssertion",
     "LayaSegmentTriage",
     "NarrativeDocument",
+    "NarrativeEvent",
     "NarrativeExtractor",
     "NarrativeSegment",
     "NarrativeSegmenter",
@@ -50,8 +56,10 @@ __all__ = [
     "SegmentExtraction",
     "SrtParser",
     "TemporalMarker",
+    "WorldRule",
     "get_laya_agent",
     "get_parser",
     "parse_narrative",
+    "save_extraction",
     "segment_narrative",
 ]
