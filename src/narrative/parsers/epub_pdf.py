@@ -13,9 +13,11 @@ from typing import ClassVar
 from src.narrative.parsers.base import (
     Action,
     BaseNarrativeParser,
+    CharacterDialogue,
     NarrativeDocument,
     Scene,
 )
+from src.narrative.parsers.fountain import _CHARACTER_EXT_RE, _parse_slugline
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +26,13 @@ _CHAPTER_HEADING_RE = re.compile(
     r"^(?:CHAPTER\s+[A-Z0-9]+(?:\s*[:.\-]\s*.*)?|PROLOGUE|EPILOGUE)\s*$",
     re.IGNORECASE,
 )
+_SCREENPLAY_HEADING_RE = re.compile(
+    r"^(INT\.?/EXT\.?|EXT\.?/INT\.?|I/E\.?|INT\.?|EXT\.?|EST\.?)"
+    r"(?:\s+(DAY|NIGHT|NITE|DAWN|DUSK|MORNING|EVENING|LATER))?\s*[:.\-\s]+(.+)$",
+    re.IGNORECASE,
+)
+_TRANSITION_RE = re.compile(r"^(?:[A-Z0-9\s]+TO:|FADE\s+(?:IN|OUT)\.?)$")
+_PAGE_NUM_RE = re.compile(r"^\d+\.?$")
 
 
 class _XhtmlTextExtractor(HTMLParser):
@@ -242,9 +251,155 @@ class PdfNarrativeParser(BaseNarrativeParser):
             scenes=scenes,
         )
 
+    @classmethod
+    def _pages_to_scenes(cls, pages: list[tuple[int, str]]) -> list[Scene]:
+        """Auto-detect screenplay vs. prose PDFs and split into Scene objects."""
+        if cls._looks_like_screenplay(pages):
+            return cls._pages_to_screenplay_scenes(pages)
+        return cls._pages_to_chapter_scenes(pages)
+
     @staticmethod
-    def _pages_to_scenes(pages: list[tuple[int, str]]) -> list[Scene]:
-        """Split pages on detected chapter headings, or fall back to one Scene per page."""
+    def _looks_like_screenplay(pages: list[tuple[int, str]]) -> bool:
+        """Return True if the extracted PDF text contains screenplay sluglines."""
+        heading_hits = 0
+        for _, text in pages[:10]:
+            for line in text.splitlines():
+                if _SCREENPLAY_HEADING_RE.match(line.strip()):
+                    heading_hits += 1
+                    if heading_hits >= 2:
+                        return True
+        return False
+
+    @staticmethod
+    def _parse_screenplay_slugline(heading: str) -> tuple[str | None, str | None, str | None]:
+        """Parse both standard ('INT. X - DAY') and colon-style ('INT DAY: X') sluglines."""
+        m = _SCREENPLAY_HEADING_RE.match(heading.strip())
+        if m and m.group(2) and ":" in heading:
+            int_ext = m.group(1).upper().rstrip(".") + "."
+            tod = m.group(2).upper()
+            loc = m.group(3).strip()
+            return int_ext, loc or None, tod
+        return _parse_slugline(heading)
+
+    @staticmethod
+    def _is_character_cue(line: str) -> bool:
+        """Heuristic for uppercase screenplay character cues in PDF text."""
+        if (
+            line.startswith("(")
+            or _SCREENPLAY_HEADING_RE.match(line)
+            or _TRANSITION_RE.match(line)
+            or _PAGE_NUM_RE.match(line)
+        ):
+            return False
+        base = _CHARACTER_EXT_RE.sub(r"\1", line).strip()
+        if not base or len(base) > 35 or len(base.split()) > 4:
+            return False
+        if not any(ch.isalpha() for ch in base):
+            return False
+        if base.endswith((".", "!", "?", ",")):
+            return False
+        return base == base.upper()
+
+    @classmethod
+    def _pages_to_screenplay_scenes(cls, pages: list[tuple[int, str]]) -> list[Scene]:
+        """Parse screenplay-formatted PDF pages into Scene objects with dialogue."""
+        scenes: list[Scene] = []
+        current_scene: Scene | None = None
+        raw_lines: list[str] = []
+
+        def ensure_scene(page_num: int) -> Scene:
+            nonlocal current_scene
+            if current_scene is None:
+                current_scene = Scene(
+                    scene_number=len(scenes) + 1,
+                    heading="TITLE / OPENING",
+                    page_start=page_num,
+                    page_end=page_num,
+                )
+            return current_scene
+
+        def flush_scene() -> None:
+            nonlocal current_scene, raw_lines
+            if current_scene is not None:
+                current_scene.raw_text = "\n".join(raw_lines).strip()
+                scenes.append(current_scene)
+                current_scene = None
+                raw_lines = []
+
+        # Flatten lines while tracking page numbers
+        stream: list[tuple[int, str]] = []
+        for page_num, text in pages:
+            for line in text.splitlines():
+                s = line.strip()
+                if s and not _PAGE_NUM_RE.match(s):
+                    stream.append((page_num, s))
+
+        i = 0
+        n = len(stream)
+        while i < n:
+            page_num, line = stream[i]
+
+            if _SCREENPLAY_HEADING_RE.match(line):
+                flush_scene()
+                int_ext, location, time_of_day = cls._parse_screenplay_slugline(line)
+                current_scene = Scene(
+                    scene_number=len(scenes) + 1,
+                    heading=line,
+                    int_ext=int_ext,
+                    location=location,
+                    time_of_day=time_of_day,
+                    page_start=page_num,
+                    page_end=page_num,
+                )
+                raw_lines = [line]
+                i += 1
+                continue
+
+            in_opening = current_scene is None
+            scene = ensure_scene(page_num)
+            scene.page_end = page_num
+
+            if not in_opening and scene.heading != "TITLE / OPENING" and i + 1 < n and cls._is_character_cue(line):
+                raw_lines.append(line)
+                m = _CHARACTER_EXT_RE.match(line)
+                char_name = m.group(1).strip() if m else line
+                extension = m.group(2).strip() if m else None
+                parentheticals: list[str] = []
+                dialogue_parts: list[str] = []
+                i += 1
+                while i < n:
+                    p_num, d_line = stream[i]
+                    if _SCREENPLAY_HEADING_RE.match(d_line) or _TRANSITION_RE.match(d_line) or cls._is_character_cue(d_line):
+                        break
+                    scene.page_end = p_num
+                    raw_lines.append(d_line)
+                    if d_line.startswith("(") and d_line.endswith(")"):
+                        parentheticals.append(d_line)
+                    else:
+                        dialogue_parts.append(d_line)
+                        # Stop after a sentence-ending line if the next line starts with a new speaker or heading
+                    i += 1
+                if dialogue_parts:
+                    scene.elements.append(
+                        CharacterDialogue(
+                            character=char_name,
+                            dialogue=" ".join(dialogue_parts),
+                            parenthetical=" ".join(parentheticals) if parentheticals else None,
+                            extension=extension,
+                        )
+                    )
+                continue
+
+            raw_lines.append(line)
+            scene.elements.append(Action(text=line))
+            i += 1
+
+        flush_scene()
+        return scenes
+
+    @staticmethod
+    def _pages_to_chapter_scenes(pages: list[tuple[int, str]]) -> list[Scene]:
+        """Split prose pages on detected chapter headings, or fall back to one Scene per page."""
         scenes: list[Scene] = []
         current_heading: str | None = None
         current_paras: list[str] = []

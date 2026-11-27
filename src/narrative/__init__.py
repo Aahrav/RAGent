@@ -14,6 +14,11 @@ from src.narrative.parsers import (
     get_parser,
     parse_narrative,
 )
+from src.narrative.segmenter import (
+    NarrativeSegment,
+    NarrativeSegmenter,
+    segment_narrative,
+)
 
 __all__ = [
     "Action",
@@ -23,9 +28,12 @@ __all__ = [
     "FdxParser",
     "FountainParser",
     "NarrativeDocument",
+    "NarrativeSegment",
+    "NarrativeSegmenter",
     "PdfNarrativeParser",
     "Scene",
     "SrtParser",
     "get_parser",
     "parse_narrative",
+    "segment_narrative",
 ]

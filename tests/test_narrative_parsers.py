@@ -231,3 +231,36 @@ def test_pdf_parser_splits_chapters_and_registry_errors() -> None:
 
     with pytest.raises(ValueError, match="Unsupported narrative format"):
         get_parser(".docx")
+
+
+def test_pdf_parser_detects_screenplay_sluglines_and_dialogue() -> None:
+    text = """THE GODFATHER
+MARIO PUZO
+INT DAY: DON'S OFFICE (SUMMER 1945)
+(CONT. )
+BONASERA
+(pause)
+I believe in America.
+EXT NITE: STREET (WINTER 1945)
+MICHAEL (V.O.)
+It was never personal.
+"""
+    doc = PdfNarrativeParser().parse_text(text, source_path="godfather.pdf")
+
+    assert doc.total_scenes == 3
+    # Title page uppercase lines stay Action, not CharacterDialogue
+    assert doc.scenes[0].heading == "TITLE / OPENING"
+    assert doc.scenes[0].dialogues == []
+
+    # Standalone (CONT. ) is not treated as a character cue
+    assert doc.scenes[1].int_ext == "INT."
+    assert doc.scenes[1].location == "DON'S OFFICE (SUMMER 1945)"
+    assert doc.scenes[1].time_of_day == "DAY"
+    assert doc.scenes[1].characters_present == ["BONASERA"]
+    assert doc.scenes[1].dialogues[0].character == "BONASERA"
+    assert doc.scenes[1].dialogues[0].parenthetical == "(pause)"
+
+    assert doc.scenes[2].int_ext == "EXT."
+    assert doc.scenes[2].time_of_day == "NITE"
+    assert doc.scenes[2].dialogues[0].character == "MICHAEL"
+    assert doc.scenes[2].dialogues[0].extension == "V.O."
