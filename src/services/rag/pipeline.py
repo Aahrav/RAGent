@@ -160,7 +160,13 @@ def ingest(
 
             if extract_narrative and Path(source_path).suffix.lower() in {".pdf", ".fountain", ".fdx", ".srt", ".epub"}:
                 try:
-                    from src.narrative import NarrativeExtractor, parse_narrative, save_extraction, segment_narrative
+                    from src.narrative import (
+                        NarrativeExtractor,
+                        NarrativeKnowledgeGraph,
+                        parse_narrative,
+                        save_extraction,
+                        segment_narrative,
+                    )
 
                     narrative_doc = parse_narrative(source_path)
                     segments = segment_narrative(narrative_doc)
@@ -168,6 +174,9 @@ def ingest(
                         narrative_doc, segments=segments
                     )
                     save_extraction(document_id=doc_id, extraction=extraction, db=db)
+
+                    kg = NarrativeKnowledgeGraph.from_extraction(extraction)
+                    kg.save_json(Path("data/graphs") / f"{doc_id}.json")
                 except Exception as exc:
                     logger.warning(
                         "Narrative extraction skipped during ingest",
