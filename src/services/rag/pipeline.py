@@ -61,7 +61,11 @@ _EMBED_BATCH_SIZE = 64
 
 # ── Ingest pipeline ────────────────────────────────────────────────────────────
 
-def ingest(sources: list[str], allowed_role: str = "public") -> IngestResult:
+def ingest(
+    sources: list[str],
+    allowed_role: str = "public",
+    extract_narrative: bool = True,
+) -> IngestResult:
     """Ingest documents from file paths or directories into the vector store.
 
     Steps:
@@ -153,6 +157,31 @@ def ingest(sources: list[str], allowed_role: str = "public") -> IngestResult:
                 db_access = DocumentAccess(document_id=doc_id, allowed_role=allowed_role)
                 db.add(db_access)
             db.commit()
+
+            if extract_narrative and Path(source_path).suffix.lower() in {".pdf", ".fountain", ".fdx", ".srt", ".epub"}:
+                try:
+                    from src.narrative import (
+                        NarrativeExtractor,
+                        NarrativeKnowledgeGraph,
+                        parse_narrative,
+                        save_extraction,
+                        segment_narrative,
+                    )
+
+                    narrative_doc = parse_narrative(source_path)
+                    segments = segment_narrative(narrative_doc)
+                    extraction = NarrativeExtractor(mode="hybrid").extract_document(
+                        narrative_doc, segments=segments
+                    )
+                    save_extraction(document_id=doc_id, extraction=extraction, db=db)
+
+                    kg = NarrativeKnowledgeGraph.from_extraction(extraction)
+                    kg.save_json(Path("data/graphs") / f"{doc_id}.json")
+                except Exception as exc:
+                    logger.warning(
+                        "Narrative extraction skipped during ingest",
+                        extra={"source": source_path, "error": str(exc)},
+                    )
 
     logger.info(
         "Documents loaded and saved to Postgres",
